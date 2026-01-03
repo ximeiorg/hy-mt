@@ -1,0 +1,11 @@
+[package]
+name = "hy-mt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+candle-core = "0.9.1"
+candle-nn = "0.9.1"
+serde = "1.0.228"
+serde_json = "1.0.148"
+tracing = "0.1.44"
