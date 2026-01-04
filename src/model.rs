@@ -118,8 +118,7 @@ pub struct HunYuanDenseV1Attention {
 impl HunYuanDenseV1Attention {
     pub fn load(config: &HunYuanDenseV1Config, layer_idx: usize, vb: VarBuilder) -> Result<Self> {
         let head_dim = config
-            .head_dim
-            .unwrap_or(config.hidden_size / config.num_key_value_heads);
+            .head_dim;
 
         let num_key_value_groups = config.num_attention_heads / config.num_key_value_heads;
 
@@ -390,10 +389,11 @@ impl HunYuanDenseV1Model {
         })
     }
 
-    pub fn forward(&self,input_ids: &Tensor,attention_mask: &Tensor,position_ids:&Tensor) -> Result<Tensor> {
+    pub fn forward(&self, input_ids: &Tensor, attention_mask: &Tensor, position_ids: &Tensor) -> Result<Tensor> {
 
         // candle_nn::rotary_emb::rope(xs, cos, sin)
+        unimplemented!("HunYuanDenseV1Model::forward")
 
-        Ok(())
+        // Ok(())
     }
 }
