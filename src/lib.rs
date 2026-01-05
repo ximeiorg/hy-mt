@@ -76,7 +76,8 @@ impl TextGeneration {
         })
     }
     pub fn new_with_default(model: HunYuanDenseV1ForCausalLM, tokenizer: Tokenizer, device: &Device) -> Result<Self> {
-        Self::new(model, tokenizer, 0, Some(0.7), Some(0.6), 1.05, 0, device)
+        // 将 repeat_last_n 设置为合理的值（比如64），避免对空上下文应用惩罚
+        Self::new(model, tokenizer, 0, Some(0.7), Some(0.6), 1.05, 64, device)
     }
 
     pub fn generate(&mut self, prompt: &str, max_length: usize) -> Result<String> { 
@@ -109,11 +110,16 @@ impl TextGeneration {
                 logits
             } else {
                 let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                apply_repeat_penalty(
-                    &logits,
-                    self.repetition_penalty,
-                    &tokens[start_at..],
-                )?
+                // 确保上下文不为空，避免对空上下文应用惩罚
+                if start_at < tokens.len() {
+                    apply_repeat_penalty(
+                        &logits,
+                        self.repetition_penalty,
+                        &tokens[start_at..],
+                    )?
+                } else {
+                    logits
+                }
             };
             let next_token = self.logits_processor.sample(&logits)?;
             tokens.push(next_token);

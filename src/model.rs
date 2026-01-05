@@ -3,7 +3,7 @@ use candle_nn::{Embedding, Linear, Module, VarBuilder, embedding, linear, linear
 
 use crate::{
     config::HunYuanDenseV1Config,
-    utils::{apply_rotary_pos_emb, scaled_dot_product_attention},
+    utils::{apply_rotary_pos_emb, scaled_dot_product_attention, repeat_kv},
     masking_utils::create_causal_mask,
 };
 
@@ -208,8 +208,8 @@ impl HunYuanDenseV1Attention {
             head_dim,
         ); // (1, 18, 4, 128)
 
-        println!("query_hidden_shape: {:?}", query_hidden_shape);
-        println!("kv_hidden_shape: {:?}", kv_hidden_shape);
+        // println!("query_hidden_shape: {:?}", query_hidden_shape);
+        // println!("kv_hidden_shape: {:?}", kv_hidden_shape);
 
         let query_states = self
             .q_proj
@@ -236,6 +236,11 @@ impl HunYuanDenseV1Attention {
 
         let query_states = self.query_layernorm.forward(&query_states)?;
         let key_states = self.key_layernorm.forward(&key_states)?;
+
+        // 重复key_states和value_states以匹配query_states的注意力头数
+        let num_key_value_groups = self.config.num_attention_heads / self.config.num_key_value_heads;
+        let key_states = repeat_kv(&key_states, num_key_value_groups)?;
+        let value_states = repeat_kv(&value_states, num_key_value_groups)?;
 
         let attn_output = scaled_dot_product_attention(
             &query_states,
