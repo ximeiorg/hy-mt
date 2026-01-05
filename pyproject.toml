@@ -8,5 +8,6 @@ dependencies = [
     "accelerate>=1.12.0",
     "huggingface-hub",
     "torch",
+    "modelscope",
     "transformers==5.0.0rc0",
 ]

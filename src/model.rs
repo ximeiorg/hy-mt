@@ -3,7 +3,8 @@ use candle_nn::{Embedding, Linear, Module, VarBuilder, embedding, linear, linear
 
 use crate::{
     config::HunYuanDenseV1Config,
-    utils::{apply_rotary_pos_emb, repeat_kv, scaled_dot_product_attention},
+    utils::{apply_rotary_pos_emb, scaled_dot_product_attention},
+    masking_utils::create_causal_mask,
 };
 
 #[derive(Debug, Clone)]
@@ -36,6 +37,18 @@ impl Module for T5LayerNorm {
         let xs = xs.broadcast_mul(&self.weight.to_dtype(dtype)?)?;
         Ok(xs)
     }
+}
+
+// 定义模型输出结构
+#[derive(Debug)]
+pub struct BaseModelOutput {
+    pub last_hidden_state: Tensor,
+}
+
+// 定义因果语言模型输出结构
+#[derive(Debug)]
+pub struct CausalLMOutput {
+    pub logits: Tensor,
 }
 
 pub type HunYuanDenseV1RMSNorm = T5LayerNorm;
@@ -88,19 +101,7 @@ impl Module for HunYuanDenseV1MLP {
     }
 }
 
-fn eager_attention_forward(
-    query: &Tensor,
-    key: &Tensor,
-    value: &Tensor,
-    attention_mask: Option<&Tensor>,
-    head_mask: Option<&Tensor>,
-    output_attentions: bool,
-    scaling: f64,
-    dropout: f64, //,推理默认为0.0
-) -> Result<Tensor> {
-    // let key_states = repeat_kv(key, n_rep)
-    unimplemented!("不走这条路径")
-}
+
 
 pub struct HunYuanDenseV1Attention {
     head_dim: usize,
@@ -352,6 +353,7 @@ impl HunYuanDenseV1RotaryEmbedding {
 
 
 pub struct HunYuanDenseV1Model {
+    config: HunYuanDenseV1Config,
     embed_tokens: Embedding,
     layers: Vec<HunYuanDenseV1DecoderLayer>,
     norm: HunYuanDenseV1RMSNorm,
@@ -368,7 +370,7 @@ impl HunYuanDenseV1Model {
                 layers.push(HunYuanDenseV1DecoderLayer::load(
                     config,
                     layer_idx,
-                    vb.pp(&format!("layers.{}", layer_idx)),
+                    vb.pp(format!("layers.{}", layer_idx)),
                 )?);
 
             }
@@ -382,6 +384,7 @@ impl HunYuanDenseV1Model {
         )?;
         let rotary_emb = HunYuanDenseV1RotaryEmbedding::load(config)?;
         Ok(Self {
+            config: config.clone(),
             embed_tokens,
             layers,
             norm,
@@ -389,11 +392,124 @@ impl HunYuanDenseV1Model {
         })
     }
 
-    pub fn forward(&self, input_ids: &Tensor, attention_mask: &Tensor, position_ids: &Tensor) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        input_ids: Option<&Tensor>,
+        attention_mask: Option<&Tensor>,
+        position_ids: Option<&Tensor>,
+        inputs_embeds: Option<&Tensor>,
+    ) -> Result<BaseModelOutput> {
+        // 输入验证：必须指定input_ids或inputs_embeds中的一个
+        if (input_ids.is_none()) ^ (inputs_embeds.is_none()) {
+            return Err(candle_core::Error::msg("You must specify exactly one of input_ids or inputs_embeds"));
+        }
 
-        // candle_nn::rotary_emb::rope(xs, cos, sin)
-        unimplemented!("HunYuanDenseV1Model::forward")
+        // 获取输入嵌入
+        let inputs_embeds = if let Some(input_ids) = input_ids {
+            self.embed_tokens.forward(input_ids)?
+        } else if let Some(inputs_embeds) = inputs_embeds {
+            inputs_embeds.clone()
+        } else {
+            return Err(candle_core::Error::msg("Either input_ids or inputs_embeds must be provided"));
+        };
 
-        // Ok(())
+        // 处理位置ID
+        let position_ids = if let Some(position_ids) = position_ids {
+            position_ids.clone()
+        } else {
+            // 如果没有提供位置ID，创建从0开始的序列
+            let seq_len = inputs_embeds.dims()[1];
+            Tensor::arange(0u32, seq_len as u32, inputs_embeds.device())?.unsqueeze(0)?
+        };
+
+        // 创建因果掩码
+        let causal_mask = create_causal_mask(
+            &self.config,
+            &inputs_embeds,
+            attention_mask,
+            &position_ids, // 使用position_ids作为cache_position
+            None, // 无缓存
+            Some(&position_ids),
+        )?;
+
+        // 初始化隐藏状态
+        let mut hidden_states = inputs_embeds;
+        
+        // 计算位置嵌入
+        let position_embeddings = self.rotary_emb.forward(&hidden_states, &position_ids)?;
+        let (cos,sin) = position_embeddings;
+        // 处理解码器层
+        for decoder_layer in &self.layers[..self.config.num_hidden_layers] {
+            hidden_states = decoder_layer.forward(
+                &hidden_states,
+                (&cos,&sin),
+                causal_mask.as_ref(),
+            )?;
+        }
+
+        // 最终归一化
+        hidden_states = self.norm.forward(&hidden_states)?;
+
+        // 返回结果
+        Ok(BaseModelOutput {
+            last_hidden_state: hidden_states,
+        })
+    }
+}
+
+pub struct HunYuanDenseV1ForCausalLM {
+    model: HunYuanDenseV1Model,
+    lm_head: Linear,
+}
+
+impl HunYuanDenseV1ForCausalLM {
+    pub fn load(config: &HunYuanDenseV1Config, vb: VarBuilder) -> Result<Self> {
+        let model = HunYuanDenseV1Model::load(config, vb.pp("model"))?;
+        let lm_head = linear(config.hidden_size, config.vocab_size, vb.pp("lm_head"))?;
+        Ok(Self { model, lm_head })
+    }
+
+    pub fn forward(
+        &self,
+        input_ids: Option<&Tensor>,
+        attention_mask: Option<&Tensor>,
+        position_ids: Option<&Tensor>,
+        inputs_embeds: Option<&Tensor>,
+        logits_to_keep: Option<&Tensor>,
+    ) -> Result<CausalLMOutput> { 
+
+        let outputs = self.model.forward(input_ids, attention_mask, position_ids, inputs_embeds)?;
+        let hidden_states = outputs.last_hidden_state;
+        
+        // 获取序列长度
+        let seq_len = hidden_states.dims()[1];
+        
+        // 根据logits_to_keep决定取哪些位置的隐藏状态
+        let selected_hidden_states = if let Some(logits_to_keep) = logits_to_keep {
+            // 如果提供了logits_to_keep，使用指定的切片
+            if logits_to_keep.dims().is_empty() {
+                // 如果是标量，取最后logits_to_keep个位置
+                let keep_count = logits_to_keep.to_scalar::<i64>()? as usize;
+                if keep_count > 0 {
+                    hidden_states.narrow(1, seq_len - keep_count, keep_count)?
+                } else {
+                    hidden_states.clone()
+                }
+            } else {
+                // 如果是张量，使用指定的索引
+                // 这里需要根据具体需求实现索引选择
+                hidden_states.narrow(1, seq_len - 1, 1)? // 默认取最后一个位置
+            }
+        } else {
+            // 默认取最后一个位置
+            hidden_states.narrow(1, seq_len - 1, 1)?
+        };
+        
+        let logits = self.lm_head.forward(&selected_hidden_states)?;
+        
+        // 返回结果
+        Ok(CausalLMOutput {
+            logits,
+        })
     }
 }

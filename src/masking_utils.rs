@@ -174,15 +174,16 @@ pub fn create_causal_mask(
             // 首先将2D掩码扩展为4D: [batch_size, 1, 1, kv_length]
             let mask_4d = mask_2d
                 .unsqueeze(1)?  // [batch_size, 1, kv_length]
-                .unsqueeze(1)?; // [batch_size, 1, 1, kv_length]
+                .unsqueeze(2)?; // [batch_size, 1, 1, kv_length]
             
             // 然后扩展到完整的4D形状: [batch_size, 1, q_length, kv_length]
             let mask_4d = mask_4d.expand((batch_size, 1, q_length, preprocess_result.kv_length))?;
             
             // 将因果掩码和2D掩码进行逻辑与操作
-            // 正确的逻辑：元素级别的逻辑与操作
-            // 使用乘法来实现逻辑与操作（在布尔上下文中）
-            let combined_mask = causal_mask.mul(&mask_4d)?;
+            // 正确的逻辑：使用where_cond方法
+            // 当mask_4d不为0时，取causal_mask的值；当mask_4d为0时，取0
+            let zeros = causal_mask.zeros_like()?;
+            let combined_mask = mask_4d.where_cond(&causal_mask, &zeros)?;
             return Ok(Some(combined_mask));
         }
     }
@@ -316,14 +317,14 @@ mod tests {
         // 1 0 0 0        1 1 1 0       1 0 0 0
         // 1 1 0 0    &   1 1 1 0   =   1 1 0 0  
         // 1 1 1 0        1 1 1 0       1 1 1 0
-        // 1 1 1 1        0 0 0 0       0 0 0 0
+        // 1 1 1 1        1 1 1 0       1 1 1 0
         
-        // 注意：where_cond的行为是：mask_4d为True时取causal_mask，False时取0
-        // 所以对于第四行，mask_4d为[0,0,0,0]，因此整个第四行都是0
+        // 注意：where_cond的行为是：mask_4d不为0时取causal_mask，为0时取0
+        // 所以对于第四行，mask_4d为[1,1,1,0]，因此第四行是[1,1,1,0]
         assert_eq!(mask_slice[0..4], [1, 0, 0, 0]);   // 第一行
         assert_eq!(mask_slice[4..8], [1, 1, 0, 0]);   // 第二行
         assert_eq!(mask_slice[8..12], [1, 1, 1, 0]);  // 第三行
-        assert_eq!(mask_slice[12..16], [0, 0, 0, 0]); // 第四行（padding位置）
+        assert_eq!(mask_slice[12..16], [1, 1, 1, 0]); // 第四行（padding位置）
         
         Ok(())
     }
