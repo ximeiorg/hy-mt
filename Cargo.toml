@@ -11,3 +11,7 @@ serde = "1.0.228"
 serde_json = "1.0.148"
 tokenizers = "0.22.2"
 tracing = "0.1.44"
+
+[[example]]
+name = "text_generation_example"
+path = "examples/text_generation_example.rs"

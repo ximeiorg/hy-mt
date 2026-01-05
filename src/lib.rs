@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use candle_core::{DType, Device, Result, Tensor};
 use tokenizers::Tokenizer;
 
@@ -23,6 +25,34 @@ pub struct TextGeneration {
 
 
 impl TextGeneration {
+
+    pub fn from_pretrained<P: AsRef<std::path::Path>>(path: P, device: &Device) -> Result<Self> {
+        use std::fs;
+        use candle_core::DType;
+        
+        // 从指定路径加载配置
+        let config_path = path.as_ref().join("config.json");
+        let config_str = fs::read_to_string(config_path).map_err(candle_core::Error::msg)?;
+        let config: config::HunYuanDenseV1Config = serde_json::from_str(&config_str)
+            .map_err(candle_core::Error::msg)?;
+
+        // 加载tokenizer
+        let tokenizer_path = path.as_ref().join("tokenizer.json");
+        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path)
+            .map_err(|e| candle_core::Error::msg(format!("Failed to load tokenizer: {}", e)))?;
+
+        // 加载模型权重
+        let weights_path = path.as_ref().join("model.safetensors");
+
+        let vb = unsafe { candle_nn::VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, device) }?;
+
+        // 加载模型
+        let model = model::HunYuanDenseV1ForCausalLM::load(&config, vb)?;
+
+        // 创建TextGeneration实例
+        Self::new_with_default(model, tokenizer, device)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: HunYuanDenseV1ForCausalLM,

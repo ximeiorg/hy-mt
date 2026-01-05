@@ -135,12 +135,12 @@ impl HunYuanDenseV1Attention {
         )?;
         let k_proj = linear_no_bias(
             config.hidden_size,
-            config.num_attention_heads * head_dim,
+            config.num_key_value_heads * head_dim,
             vb.pp("k_proj"),
         )?;
         let v_proj = linear_no_bias(
             config.hidden_size,
-            config.num_attention_heads * head_dim,
+            config.num_key_value_heads * head_dim,
             vb.pp("v_proj"),
         )?;
         let o_proj = linear_no_bias(
@@ -148,6 +148,7 @@ impl HunYuanDenseV1Attention {
             config.hidden_size,
             vb.pp("o_proj"),
         )?;
+
 
         let query_layernorm =
             HunYuanDenseV1RMSNorm::load(head_dim, config.rms_norm_eps, vb.pp("query_layernorm"))?;
@@ -175,29 +176,57 @@ impl HunYuanDenseV1Attention {
         attention_mask: Option<&Tensor>,
     ) -> Result<(Tensor, Option<Tensor>)> {
         let input_shape = hidden_states.dims();
-        let hidden_shape = (
-            input_shape[0],
-            input_shape[1],
-            self.config.num_attention_heads,
-            self.head_dim,
-        ); // (1, 1, -1, 128)
+        // 计算每个头的维度，类似于Python的 -1
+        let head_dim = self.head_dim;
+        let hidden_size = input_shape[2]; // hidden_size = 512
+        let seq_len = input_shape[1]; // seq_len = 18
+        let batch_size = input_shape[0]; // batch_size = 1
+        
+        // 使用配置中的num_attention_heads而不是自动推断的维度
+        let num_attention_heads = self.config.num_attention_heads;
+        
+        // 验证hidden_size是否等于num_attention_heads * head_dim
+        let expected_hidden_size = num_attention_heads * head_dim;
+        if hidden_size != expected_hidden_size {
+            return Err(candle_core::Error::msg(format!(
+                "Shape mismatch: hidden_size {} != num_attention_heads {} * head_dim {}",
+                hidden_size, num_attention_heads, head_dim
+            )));
+        }
+        
+        let query_hidden_shape = (
+            batch_size,
+            seq_len,
+            num_attention_heads,
+            head_dim,
+        ); // (1, 18, 16, 128)
+
+        let kv_hidden_shape = (
+            batch_size,
+            seq_len,
+            self.config.num_key_value_heads,
+            head_dim,
+        ); // (1, 18, 4, 128)
+
+        println!("query_hidden_shape: {:?}", query_hidden_shape);
+        println!("kv_hidden_shape: {:?}", kv_hidden_shape);
 
         let query_states = self
             .q_proj
             .forward(hidden_states)?
-            .reshape(hidden_shape)?
+            .reshape(query_hidden_shape)?
             .transpose(1, 2)?;
 
         let key_states = self
             .k_proj
             .forward(hidden_states)?
-            .reshape(hidden_shape)?
+            .reshape(kv_hidden_shape)?
             .transpose(1, 2)?;
 
         let value_states = self
             .v_proj
             .forward(hidden_states)?
-            .reshape(hidden_shape)?
+            .reshape(kv_hidden_shape)?
             .transpose(1, 2)?;
 
         let (sin, cos) = position_embeddings;
@@ -212,14 +241,20 @@ impl HunYuanDenseV1Attention {
             &query_states,
             &key_states,
             &value_states,
-            attention_mask,
+            if self.is_causal { None } else { attention_mask },
             Some(0.0),
             Some(self.is_causal),
             Some(self.scaling),
         )?;
         // attn_weights is None
 
-        let attn_output = attn_output.reshape(input_shape)?.contiguous()?;
+        // 先转置回 [batch_size, seq_len, num_heads, head_dim] 形状
+        let attn_output = attn_output.transpose(1, 2)?;
+        // 然后合并最后两个维度 [batch_size, seq_len, num_heads * head_dim]
+        // 计算hidden_size = num_heads * head_dim
+        let hidden_size = self.config.num_attention_heads * self.head_dim;
+        let output_shape = (input_shape[0], input_shape[1], hidden_size);
+        let attn_output = attn_output.reshape(output_shape)?.contiguous()?;
         let attn_output = self.o_proj.forward(&attn_output)?;
 
         Ok((attn_output, None))
@@ -326,8 +361,9 @@ impl HunYuanDenseV1RotaryEmbedding {
             let inv_freq_f32 = inv_freq_3d.to_dtype(DType::F32)?;
 
             // 使用expand扩展到目标形状: [batch_size, rotary_dim/2, 1]
+            // 修复：将 self.inv_freq.dims()[1] 改为 self.inv_freq.dims()[0]
             let expanded =
-                inv_freq_f32.expand((position_ids.dims()[0], self.inv_freq.dims()[1] / 2, 1))?;
+                inv_freq_f32.expand((position_ids.dims()[0], self.inv_freq.dims()[0], 1))?;
 
             // 移动到与x相同的设备（通常不需要，但保持一致性）
             expanded.to_device(xs.device())
@@ -399,9 +435,12 @@ impl HunYuanDenseV1Model {
         position_ids: Option<&Tensor>,
         inputs_embeds: Option<&Tensor>,
     ) -> Result<BaseModelOutput> {
-        // 输入验证：必须指定input_ids或inputs_embeds中的一个
-        if (input_ids.is_none()) ^ (inputs_embeds.is_none()) {
+        // 输入验证：必须指定input_ids或inputs_embeds中的一个，但不能同时指定两个
+        if input_ids.is_none() && inputs_embeds.is_none() {
             return Err(candle_core::Error::msg("You must specify exactly one of input_ids or inputs_embeds"));
+        }
+        if input_ids.is_some() && inputs_embeds.is_some() {
+            return Err(candle_core::Error::msg("You must specify only one of input_ids or inputs_embeds, not both"));
         }
 
         // 获取输入嵌入
@@ -465,7 +504,7 @@ pub struct HunYuanDenseV1ForCausalLM {
 impl HunYuanDenseV1ForCausalLM {
     pub fn load(config: &HunYuanDenseV1Config, vb: VarBuilder) -> Result<Self> {
         let model = HunYuanDenseV1Model::load(config, vb.pp("model"))?;
-        let lm_head = linear(config.hidden_size, config.vocab_size, vb.pp("lm_head"))?;
+        let lm_head = linear_no_bias(config.hidden_size, config.vocab_size, vb.pp("lm_head"))?;
         Ok(Self { model, lm_head })
     }
 

@@ -2,7 +2,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 
-model_name_or_path = "./tencent/HY-MT1.5-1.8B-FP8"
+model_name_or_path = "./tencent/HY-MT1.5-1.8B"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 model = AutoModelForCausalLM.from_pretrained(model_name_or_path, device_map="auto")
