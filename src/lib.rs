@@ -77,9 +77,9 @@ impl TextGeneration {
     }
     pub fn new_with_default(model: HunYuanDenseV1ForCausalLM, tokenizer: Tokenizer, device: &Device) -> Result<Self> {
         // 使用HunYuan模型推荐的生成参数：top_k=20, top_p=0.6, temperature=0.7
-        // 降低重复惩罚（从1.05降到1.01），避免过于严格的重复检测
+        // 增加重复惩罚到1.1，避免重复生成问题
         // 将 repeat_last_n 设置为合理的值（比如64），避免对空上下文应用惩罚
-        Self::new_with_topk(model, tokenizer, 0, Some(0.7), Some(20), Some(0.6), 1.01, 64, device)
+        Self::new_with_topk(model, tokenizer, 0, Some(0.7), Some(20), Some(0.6), 1.1, 64, device)
     }
     
     #[allow(clippy::too_many_arguments)]
@@ -123,6 +123,7 @@ impl TextGeneration {
         let formatted_prompt = format!("<｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n\n{}<｜hy_place▁holder▁no▁8｜>", prompt);
         
         println!("格式化提示文本: {}", TextGeneration::repr(&formatted_prompt));
+        println!("原始prompt: {}", prompt);
         
         // 编码格式化后的提示文本
         let mut tokens = self.tokenizer.tokenizer()
@@ -199,11 +200,21 @@ impl TextGeneration {
             let next_token = self.logits_processor.sample(&logits)?;
             tokens.push(next_token);
             
-            // println!("Generated token {}: {}", index, next_token);
+            // println!("Generated token {}: {} (EOS: {})", index, next_token, next_token == 120020);
 
             // 检查是否生成了结束标记
             if next_token == 120020 { // eos_token_id
+                // println!("检测到EOS token，停止生成");
                 break;
+            }
+            
+            // 额外的安全机制：如果连续生成重复的token，强制停止
+            if tokens.len() >= 3 {
+                let last_three = &tokens[tokens.len()-3..];
+                if last_three[0] == last_three[1] && last_three[1] == last_three[2] {
+                    // println!("检测到连续重复token，强制停止生成");
+                    break;
+                }
             }
 
             if let Some(t) = self.tokenizer.next_token(next_token)? {

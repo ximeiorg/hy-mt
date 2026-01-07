@@ -11,7 +11,8 @@ fn main() -> Result<()> {
     let mut model = TextGeneration::from_pretrained(path, &device)?;
 
     // 生成文本 - 使用与Python版本相同的聊天模板格式
-    let prompt = "Translate the following segment into Chinese, without additional explanation.\n\nIt's on the house.";
+    // 只需要提供源文本，翻译指令会在generate函数中自动添加
+    let prompt = "This pull request updates documentation to improve clarity and add support for new features, particularly around audio extraction for video datasets and the model quickstart matrix. It also synchronizes documentation with recent code changes, such as updated line numbers in webhook references.";
     println!("输入提示: {}", prompt);
     println!("生成结果: ");
     println!();

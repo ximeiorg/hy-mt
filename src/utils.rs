@@ -62,6 +62,7 @@ pub fn apply_repeat_penalty(logits: &Tensor, penalty: f32, context: &[u32]) -> R
         }
         already_seen.insert(token_id);
         if let Some(logit) = logits.get_mut(*token_id as usize) {
+            // 正确的重复惩罚逻辑：降低重复token的概率
             if *logit >= 0. {
                 *logit /= penalty
             } else {
