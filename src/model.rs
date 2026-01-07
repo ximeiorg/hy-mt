@@ -547,7 +547,7 @@ impl HunYuanDenseV1ForCausalLM {
         let selected_hidden_states = if let Some(logits_to_keep) = logits_to_keep {
             // 如果提供了logits_to_keep，使用指定的切片
             if logits_to_keep.dims().is_empty() {
-                // 如果是标量，取最后logits_to_keep个位置
+                // 如果是标量，取最后logits_to_keep个位置（与Python实现一致）
                 let keep_count = logits_to_keep.to_scalar::<i64>()? as usize;
                 if keep_count > 0 {
                     hidden_states.narrow(1, seq_len - keep_count, keep_count)?
@@ -555,13 +555,12 @@ impl HunYuanDenseV1ForCausalLM {
                     hidden_states.clone()
                 }
             } else {
-                // 如果是张量，使用指定的索引
-                // 这里需要根据具体需求实现索引选择
-                hidden_states.narrow(1, seq_len - 1, 1)? // 默认取最后一个位置
+                // 如果是张量，直接使用完整的隐藏状态（与Python实现一致）
+                hidden_states.clone()
             }
         } else {
-            // 默认取最后一个位置
-            hidden_states.narrow(1, seq_len - 1, 1)?
+            // 当logits_to_keep为None时，返回完整的隐藏状态（与Python实现一致）
+            hidden_states.clone()
         };
         
         let logits = self.lm_head.forward(&selected_hidden_states)?;

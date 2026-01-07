@@ -40,6 +40,20 @@ impl LogitsProcessor {
         Self::from_sampling(seed, sampling)
     }
 
+    pub fn new_with_topk(seed: u64, temperature: Option<f64>, top_k: Option<usize>, top_p: Option<f64>) -> Self {
+        let temperature = temperature.and_then(|v| if v < 1e-7 { None } else { Some(v) });
+        let sampling = match temperature {
+            None => Sampling::ArgMax,
+            Some(temperature) => match (top_k, top_p) {
+                (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
+                (Some(k), None) => Sampling::TopK { k, temperature },
+                (None, Some(p)) => Sampling::TopP { p, temperature },
+                (None, None) => Sampling::All { temperature },
+            },
+        };
+        Self::from_sampling(seed, sampling)
+    }
+
     fn sample_argmax(&mut self, logits: Tensor) -> Result<u32> {
         logits.argmax(D::Minus1)?.to_scalar::<u32>()
     }

@@ -144,10 +144,8 @@ pub fn scaled_dot_product_attention(
             assert!(attn_mask.is_none(), "scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True");
             let mask = Tensor::ones((l, s), DType::U8, device)?.tril(0)?;
             
-            // 使用where_cond实现logical_not
-            let zeros = Tensor::zeros((l, s), DType::U8, device)?;
-            let ones = Tensor::ones((l, s), DType::U8, device)?;
-            let bool_mask = mask.where_cond(&zeros, &ones)?;  // 当mask为1时输出0，为0时输出1 
+            // 直接使用mask.eq(0)来找到上三角位置（需要被屏蔽的位置）
+            let bool_mask = mask.eq(&Tensor::zeros((l, s), DType::U8, device)?)?;
             attn_bias = attn_bias.masked_fill(&bool_mask, f32::NEG_INFINITY)?;
         }
 
