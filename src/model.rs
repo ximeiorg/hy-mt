@@ -8,13 +8,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-struct T5LayerNorm {
+struct HunYuanDenseV1RMSNorm {
     weight: Tensor,
     variance_epsilon: f64,
     span: tracing::Span,
 }
 
-impl T5LayerNorm {
+impl HunYuanDenseV1RMSNorm {
     fn load(hidden_size: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
         let weight = vb.get(hidden_size, "weight")?;
         Ok(Self {
@@ -25,7 +25,7 @@ impl T5LayerNorm {
     }
 }
 
-impl Module for T5LayerNorm {
+impl Module for HunYuanDenseV1RMSNorm {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
         let dtype = xs.dtype();
@@ -51,7 +51,6 @@ pub struct CausalLMOutput {
     pub logits: Tensor,
 }
 
-pub type HunYuanDenseV1RMSNorm = T5LayerNorm;
 
 pub struct HunYuanDenseV1MLP {
     gate_proj: Linear,
@@ -93,9 +92,12 @@ impl HunYuanDenseV1MLP {
 
 impl Module for HunYuanDenseV1MLP {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let gate_output = self.gate_proj.forward(xs)?.silu()?;
+        let gate_output = self.gate_proj.forward(xs)?;
+        
+        let gate_output = gate_output.silu()?;
         let up_output = self.up_proj.forward(xs)?;
         let ys = gate_output.broadcast_mul(&up_output)?;
+        
 
         self.down_proj.forward(&ys)
     }
@@ -216,7 +218,7 @@ impl HunYuanDenseV1Attention {
             .forward(hidden_states)?
             .reshape(query_hidden_shape)?
             .transpose(1, 2)?;
-
+        
         let key_states = self
             .k_proj
             .forward(hidden_states)?
@@ -234,13 +236,18 @@ impl HunYuanDenseV1Attention {
         let (query_states, key_states) =
             apply_rotary_pos_emb(&query_states, &key_states, cos, sin, Some(1))?;
 
-        let query_states = self.query_layernorm.forward(&query_states)?;
+        
+        let query_states = self.query_layernorm.forward(&query_states)?; //NAN
         let key_states = self.key_layernorm.forward(&key_states)?;
+
+        
+
 
         // 重复key_states和value_states以匹配query_states的注意力头数
         let num_key_value_groups = self.config.num_attention_heads / self.config.num_key_value_heads;
         let key_states = repeat_kv(&key_states, num_key_value_groups)?;
         let value_states = repeat_kv(&value_states, num_key_value_groups)?;
+
 
         let attn_output = scaled_dot_product_attention(
             &query_states,
@@ -251,6 +258,7 @@ impl HunYuanDenseV1Attention {
             Some(self.is_causal),
             Some(self.scaling),
         )?;
+        // println!("attn_output:{attn_output}");
         // attn_weights is None
 
         // 先转置回 [batch_size, seq_len, num_heads, head_dim] 形状
@@ -306,16 +314,20 @@ impl HunYuanDenseV1DecoderLayer {
         attention_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let residual = hidden_states;
+        
         let hidden_states = self.input_layernorm.forward(hidden_states)?;
+        
         // self attention
         let (hidden_states, _) =
             self.self_attn
                 .forward(&hidden_states, position_embeddings, attention_mask)?;
 
         let hidden_states = residual.broadcast_add(&hidden_states)?;
+        
         // full connect
         let residual = &hidden_states;
         let hidden_states = self.post_attention_layernorm.forward(&hidden_states)?;
+        
         let hidden_states = self.mlp.forward(&hidden_states)?;
         let hidden_states = residual.broadcast_add(&hidden_states)?;
         Ok(hidden_states)
@@ -479,9 +491,11 @@ impl HunYuanDenseV1Model {
         // 初始化隐藏状态
         let mut hidden_states = inputs_embeds;
         
+        
         // 计算位置嵌入
         let position_embeddings = self.rotary_emb.forward(&hidden_states, &position_ids)?;
         let (cos,sin) = position_embeddings;
+        
         // 处理解码器层
         for decoder_layer in &self.layers[..self.config.num_hidden_layers] {
             hidden_states = decoder_layer.forward(
@@ -489,6 +503,7 @@ impl HunYuanDenseV1Model {
                 (&cos,&sin),
                 causal_mask.as_ref(),
             )?;
+           
         }
 
         // 最终归一化

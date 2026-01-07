@@ -5,7 +5,7 @@ import os
 model_name_or_path = "./tencent/HY-MT1.5-1.8B"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-model = AutoModelForCausalLM.from_pretrained(model_name_or_path, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(model_name_or_path, device_map="cpu")
 
 print(model)
 # You may want to use bfloat16 and/or move to GPU here

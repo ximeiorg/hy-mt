@@ -143,10 +143,11 @@ pub fn scaled_dot_product_attention(
         if matches!(is_causal, Some(true)) {
             assert!(attn_mask.is_none(), "scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True");
             let mask = Tensor::ones((l, s), DType::U8, device)?.tril(0)?;
-            // attn_bias = attn_bias.masked_fill(&mask.logical_not()?, f32::NEG_INFINITY)?;
-            // 修复：创建与mask形状相同的全1张量进行比较
+            
+            // 使用where_cond实现logical_not
+            let zeros = Tensor::zeros((l, s), DType::U8, device)?;
             let ones = Tensor::ones((l, s), DType::U8, device)?;
-            let bool_mask = mask.eq(&ones)?;
+            let bool_mask = mask.where_cond(&zeros, &ones)?;  // 当mask为1时输出0，为0时输出1 
             attn_bias = attn_bias.masked_fill(&bool_mask, f32::NEG_INFINITY)?;
         }
 
