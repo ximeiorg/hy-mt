@@ -106,13 +106,23 @@ impl TextGeneration {
         })
     }
 
+    pub fn model(&self) -> &HunYuanDenseV1ForCausalLM {
+        &self.model
+    }
+
+    pub fn tokenizer(&self) -> &TokenOutputStream {
+        &self.tokenizer
+    }
+
     pub fn generate(&mut self, prompt: &str, max_length: usize) -> Result<String> { 
         use std::io::Write;
         self.tokenizer.clear();
         
         // 构建与Python版本完全一致的聊天模板格式
-        // 格式: <｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n{source_text}<｜hy_place▁holder▁no▁8｜>
-        let formatted_prompt = format!("<｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n{}<｜hy_place▁holder▁no▁8｜>", prompt);
+        // 格式: <｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n\n{source_text}<｜hy_place▁holder▁no▁8｜>
+        let formatted_prompt = format!("<｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n\n{}<｜hy_place▁holder▁no▁8｜>", prompt);
+        
+        println!("格式化提示文本: {}", TextGeneration::repr(&formatted_prompt));
         
         // 编码格式化后的提示文本
         let mut tokens = self.tokenizer.tokenizer()
@@ -120,6 +130,8 @@ impl TextGeneration {
             .map_err(|e| candle_core::Error::msg(format!("Failed to encode prompt: {}", e)))?
             .get_ids()
             .to_vec();
+        
+        println!("Token IDs: {:?}", tokens);
         
         // 编码并打印提示文本
         for &t in tokens.iter() {
@@ -129,13 +141,17 @@ impl TextGeneration {
         }
         std::io::stdout().flush()?;
 
-        let mut generated_tokens = 0usize;
+        // 使用完整的上下文窗口进行生成，而不是每次只使用1个token
+        // 这有助于模型更好地理解上下文
+        let context_window = 512; // 使用合理的上下文窗口大小
 
         for index in 0..max_length {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
+            // 使用完整的上下文窗口，但不超过tokens长度
+            let context_size = tokens.len().min(context_window);
             let start_pos = tokens.len().saturating_sub(context_size);
             let ctxt = &tokens[start_pos..];
             let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
+
             
             // 创建注意力掩码：所有位置都是有效token（非padding）
             let attention_mask = Tensor::ones((1, ctxt.len()), DType::U8, &self.device)?;
@@ -143,55 +159,27 @@ impl TextGeneration {
             // 在生成过程中，我们只需要最后一个位置的logits
             // 根据Python实现，传递None表示不需要特殊处理logits_to_keep
             let out = self.model.forward(Some(&input), Some(&attention_mask), None, None, None)?;
+            
+            // 调试：检查logits形状
+            // println!("Logits shape: {:?}", out.logits.shape());
+            
             // 获取logits（形状为[1, seq_len, vocab_size]），然后取最后一个位置的logits
             let logits = out.logits.squeeze(0)?.narrow(0, ctxt.len() - 1, 1)?.squeeze(0)?.to_dtype(DType::F32)?;
             
-            // 调试：检查第一个生成的token的logits分布
-            if index == 0 {
-                println!("\n=== 调试第一个token的logits分布 ===");
-                println!("logits形状: {:?}", logits.dims());
-                
-                // 手动计算softmax概率
-                let max_logit = logits.max(0)?;
-                // 将max_logit扩展到与logits相同的形状
-                let max_logit_expanded = max_logit.broadcast_as(logits.dims())?;
-                let shifted_logits = (&logits - &max_logit_expanded)?;
-                let exp_logits = shifted_logits.exp()?;
-                let sum_exp = exp_logits.sum(0)?;
-                // 将sum_exp扩展到与exp_logits相同的形状
-                let sum_exp_expanded = sum_exp.broadcast_as(exp_logits.dims())?;
-                let probs = (&exp_logits / &sum_exp_expanded)?;
-                
-                // 手动实现top-k选择
-                let k = 10;
-                let vocab_size = logits.dims()[0];
-                
-                // 收集所有概率和索引
-                let mut all_probs: Vec<(f32, u32)> = Vec::new();
-                for i in 0..vocab_size {
-                    let prob: f32 = probs.get(i)?.to_scalar()?;
-                    all_probs.push((prob, i as u32));
-                }
-                
-                // 按概率降序排序
-                all_probs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-                
-                println!("前{}个最可能的token:", k);
-                for i in 0..k {
-                    let (prob, idx) = all_probs[i];
-                    println!("{:2}. Token ID: {:6}, 概率: {:.4}", i+1, idx, prob);
-                }
-                
-                // 检查关键token的概率
-                let key_tokens = [2947, 120020, 120007, 120026]; // 2947 = "这是"
-                println!("\n关键token检查:");
-                for &token_id in &key_tokens {
-                    if token_id < vocab_size as u32 {
-                        let prob: f32 = probs.get(token_id as usize)?.to_scalar()?;
-                        println!("Token ID {}: 概率 = {:.6}", token_id, prob);
-                    }
-                }
-            }
+            // 调试：检查logits值
+            // println!("Logits shape after processing: {:?}", logits.shape());
+            
+            // 调试：检查前10个logits值
+            // let logits_vec: Vec<f32> = logits.to_vec1()?;
+            // let top_5_indices: Vec<usize> = {
+            //     let mut indices: Vec<usize> = (0..logits_vec.len()).collect();
+            //     indices.sort_by(|&a, &b| logits_vec[b].partial_cmp(&logits_vec[a]).unwrap());
+            //     indices.truncate(5);
+            //     indices
+            // };
+            // println!("Top 5 logits indices: {:?}", top_5_indices);
+            // println!("Top 5 logits values: {:?}", top_5_indices.iter().map(|&i| logits_vec[i]).collect::<Vec<f32>>());
+            
             let logits = if self.repetition_penalty == 1. {
                 logits
             } else {
@@ -207,9 +195,11 @@ impl TextGeneration {
                     logits
                 }
             };
+            
             let next_token = self.logits_processor.sample(&logits)?;
             tokens.push(next_token);
-            generated_tokens += 1;
+            
+            // println!("Generated token {}: {}", index, next_token);
 
             // 检查是否生成了结束标记
             if next_token == 120020 { // eos_token_id
@@ -230,5 +220,20 @@ impl TextGeneration {
         
         let generated_text = self.tokenizer.decode_all()?;
         Ok(generated_text)
+    }
+    
+    // 辅助函数：显示字符串的repr形式，用于调试
+    fn repr(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '\n' => "\\n".to_string(),
+                '\t' => "\\t".to_string(),
+                '\r' => "\\r".to_string(),
+                '\\' => "\\\\".to_string(),
+                '"' => "\\\"".to_string(),
+                c if c.is_control() => format!("\\u{{{:04x}}}", c as u32),
+                c => c.to_string(),
+            })
+            .collect()
     }
 }

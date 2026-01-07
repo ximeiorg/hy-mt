@@ -1,5 +1,5 @@
 use candle_core::*;
-use candle_nn::{Embedding, Linear, Module, VarBuilder, embedding, linear, linear_no_bias};
+use candle_nn::{Embedding, Linear, Module, VarBuilder, embedding, linear_no_bias};
 
 use crate::{
     config::HunYuanDenseV1Config,
@@ -8,14 +8,14 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-struct HunYuanDenseV1RMSNorm {
+pub struct HunYuanDenseV1RMSNorm {
     weight: Tensor,
     variance_epsilon: f64,
     span: tracing::Span,
 }
 
 impl HunYuanDenseV1RMSNorm {
-    fn load(hidden_size: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
+    pub fn load(hidden_size: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
         let weight = vb.get(hidden_size, "weight")?;
         Ok(Self {
             weight,
@@ -275,10 +275,10 @@ impl HunYuanDenseV1Attention {
 }
 
 pub struct HunYuanDenseV1DecoderLayer {
-    self_attn: HunYuanDenseV1Attention,
-    mlp: HunYuanDenseV1MLP,
-    input_layernorm: HunYuanDenseV1RMSNorm,
-    post_attention_layernorm: HunYuanDenseV1RMSNorm,
+    pub self_attn: HunYuanDenseV1Attention,
+    pub mlp: HunYuanDenseV1MLP,
+    pub input_layernorm: HunYuanDenseV1RMSNorm,
+    pub post_attention_layernorm: HunYuanDenseV1RMSNorm,
     layer_idx: usize,
 }
 
@@ -343,17 +343,18 @@ impl HunYuanDenseV1RotaryEmbedding {
     pub fn load(config: &HunYuanDenseV1Config) -> Result<Self> {
         let rope_theta = config.rope_theta;
         let alpha = config.rope_scaling.alpha;
+        // 根据HunYuan论文，rope_theta的计算方式应该是rope_theta * alpha^(head_dim / (head_dim-2))
         let base = rope_theta * alpha.powf((config.head_dim as f64) / ((config.head_dim as f64) - 2.0));
         let inv_freq = {
             let mut inv_freq_data = Vec::new();
             for i in (0..config.head_dim).step_by(2) {
-                inv_freq_data.push(1.0 / (base.powf(i as f64 / config.head_dim as f64)));
+                inv_freq_data.push(1.0 / base.powf(i as f64 / config.head_dim as f64));
             }
             Tensor::from_vec(inv_freq_data, (config.head_dim / 2,), &Device::Cpu)?
         };
         Ok(Self {
             inv_freq,
-            attention_scaling: 1.0,
+            attention_scaling: config.rope_scaling.mscale as f32, // 使用mscale参数
         })
     }
 
@@ -366,11 +367,8 @@ impl HunYuanDenseV1RotaryEmbedding {
         let inv_freq_expanded = {
             let inv_freq = &self.inv_freq;
             let inv_freq_3d = if inv_freq.rank() == 1 {
-                // [d] -> [1, d, 1]
+                // [d/2] -> [1, d/2, 1]
                 inv_freq.unsqueeze(0)?.unsqueeze(2)?
-            } else if inv_freq.rank() == 2 {
-                // [1, d] -> [1, d, 1]
-                inv_freq.unsqueeze(2)?
             } else {
                 inv_freq.clone()
             };
@@ -406,11 +404,11 @@ impl HunYuanDenseV1RotaryEmbedding {
 
 
 pub struct HunYuanDenseV1Model {
-    config: HunYuanDenseV1Config,
-    embed_tokens: Embedding,
-    layers: Vec<HunYuanDenseV1DecoderLayer>,
-    norm: HunYuanDenseV1RMSNorm,
-    rotary_emb: HunYuanDenseV1RotaryEmbedding,
+    pub config: HunYuanDenseV1Config,
+    pub embed_tokens: Embedding,
+    pub layers: Vec<HunYuanDenseV1DecoderLayer>,
+    pub norm: HunYuanDenseV1RMSNorm,
+    pub rotary_emb: HunYuanDenseV1RotaryEmbedding,
 }
 
 impl HunYuanDenseV1Model {
@@ -496,7 +494,7 @@ impl HunYuanDenseV1Model {
         let position_embeddings = self.rotary_emb.forward(&hidden_states, &position_ids)?;
         let (cos,sin) = position_embeddings;
         
-        // 处理解码器层
+        // 处解码器层
         for decoder_layer in &self.layers[..self.config.num_hidden_layers] {
             hidden_states = decoder_layer.forward(
                 &hidden_states,
@@ -517,8 +515,8 @@ impl HunYuanDenseV1Model {
 }
 
 pub struct HunYuanDenseV1ForCausalLM {
-    model: HunYuanDenseV1Model,
-    lm_head: Linear,
+    pub model: HunYuanDenseV1Model,
+    pub lm_head: Linear,
 }
 
 impl HunYuanDenseV1ForCausalLM {
