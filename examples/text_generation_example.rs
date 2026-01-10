@@ -13,7 +13,7 @@ fn main() -> Result<()> {
 
     // 生成文本 - 使用与Python版本相同的聊天模板格式
     // 只需要提供源文本，翻译指令会在generate函数中自动添加
-    let prompt = "Candle is a minimalist ML framework for Rust with a focus on performance (including GPU support) and ease of use. .";
+    let prompt = "It’s on the house.";
     println!("输入提示: {}", prompt);
     println!("生成结果: ");
     println!();
