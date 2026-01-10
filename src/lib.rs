@@ -4,7 +4,7 @@ use candle_core::{DType, Device, Result, Tensor};
 use tokenizers::Tokenizer;
 
 use crate::{
-    logits_processor::LogitsProcessor, model::HunYuanDenseV1ForCausalLM, tokenizer::TokenOutputStream, utils::apply_repeat_penalty,
+    logits_processor::LogitsProcessor, model::HunYuanDenseV1ForCausalLM, prompt::Prompter, tokenizer::TokenOutputStream, utils::apply_repeat_penalty
 };
 
 pub mod config;
@@ -13,6 +13,7 @@ pub mod masking_utils;
 pub mod model;
 pub mod tokenizer;
 pub mod utils;
+pub mod prompt;
 
 pub struct TextGeneration {
     device: Device,
@@ -114,16 +115,13 @@ impl TextGeneration {
         &self.tokenizer
     }
 
-    pub fn generate(&mut self, prompt: &str, max_length: usize) -> Result<String> { 
+    pub fn generate(&mut self, prompt: impl Prompter, max_length: usize) -> Result<String> { 
         use std::io::Write;
         self.tokenizer.clear();
         
         // 构建与Python版本完全一致的聊天模板格式
         // 格式: <｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n\n{source_text}<｜hy_place▁holder▁no▁8｜>
-        let formatted_prompt = format!("<｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Chinese without additional explanation.\n\n{}<｜hy_place▁holder▁no▁8｜>", prompt);
-        
-        println!("格式化提示文本: {}", TextGeneration::repr(&formatted_prompt));
-        println!("原始prompt: {}", prompt);
+        let formatted_prompt = prompt.to_prompt();
         
         // 编码格式化后的提示文本
         let mut tokens = self.tokenizer.tokenizer()
@@ -132,21 +130,21 @@ impl TextGeneration {
             .get_ids()
             .to_vec();
         
-        println!("Token IDs: {:?}", tokens);
+        // println!("Token IDs: {:?}", tokens);
         
         // 编码并打印提示文本
-        for &t in tokens.iter() {
-            if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}")
-            }
-        }
-        std::io::stdout().flush()?;
+        // for &t in tokens.iter() {
+        //     if let Some(t) = self.tokenizer.next_token(t)? {
+        //         print!("{t}")
+        //     }
+        // }
+        // std::io::stdout().flush()?;
 
         // 使用完整的上下文窗口进行生成，而不是每次只使用1个token
         // 这有助于模型更好地理解上下文
         let context_window = 512; // 使用合理的上下文窗口大小
 
-        for index in 0..max_length {
+        for _index in 0..max_length {
             // 使用完整的上下文窗口，但不超过tokens长度
             let context_size = tokens.len().min(context_window);
             let start_pos = tokens.len().saturating_sub(context_size);
