@@ -11,7 +11,7 @@ fn main() -> Result<()> {
     let mut model = TextGeneration::from_pretrained(path, &device)?;
 
 
-    let prompt = "Translate the following segment into Chinese without additional explanation.\n\nHello, I am a student.";
+    let prompt = "Translate the following segment into Chinese without additional explanation.\n\nIt’s on the house.";
 
     let result = model.generate(prompt, 100)?;
     println!("结果:{result}");

@@ -86,6 +86,40 @@ let mut model = TextGeneration::new_with_topk(
 )?;
 ```
 
+### 流式生成
+
+库支持两种流式生成方式：
+
+#### 使用回调函数
+
+```rust
+use hy_mt::TextGeneration;
+
+let mut model = TextGeneration::from_pretrained(path, &device)?;
+
+// 使用回调函数实时接收生成的文本片段
+let result = model.generate_stream("Hello world", 512, |text_chunk| {
+    println!("实时生成: {}", text_chunk);
+    Ok(())
+})?;
+
+println!("完整结果: {}", result);
+```
+
+#### 使用迭代器
+
+```rust
+use hy_mt::TextGeneration;
+
+let mut model = TextGeneration::from_pretrained(path, &device)?;
+
+// 使用迭代器逐个获取生成的文本片段
+for chunk in model.generate_stream_iter("Hello world", 512)? {
+    let chunk = chunk?;
+    println!("生成片段: {}", chunk);
+}
+```
+
 ## 项目结构
 
 ```

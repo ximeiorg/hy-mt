@@ -40,7 +40,10 @@ impl TokenOutputStream {
         };
         self.tokens.push(token);
         let text = self.decode(&self.tokens[self.prev_index..])?;
-        if text.len() > prev_text.len() && text.chars().last().unwrap().is_alphanumeric() {
+        
+        // 改进的逻辑：只要文本长度增加就返回新的文本片段
+        // 不再限制为字母数字字符，这样标点符号也能及时返回
+        if text.len() > prev_text.len() {
             let text = text.split_at(prev_text.len());
             self.prev_index = self.current_index;
             self.current_index = self.tokens.len();
