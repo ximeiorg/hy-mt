@@ -200,6 +200,7 @@ cargo run --release --features metal --example stream_generation_example -- <mod
 cargo run --release --features metal --example translate -- --model <model-dir> --target en --text "今天天气真好。"
 cargo run --release --features metal --example quality -- <model-dir>   # 7 类 prompt 场景
 cargo run --release --features metal --example bench -- <model-dir> 40
+cargo run --release --features metal --example micro_bench               # 算子级计时
 cargo run --example inspect_tokens -- <model-dir>                       # 分词 / 模板检查
 ```
 

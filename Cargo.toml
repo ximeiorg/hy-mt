@@ -95,6 +95,10 @@ name = "bench"
 path = "examples/bench.rs"
 
 [[example]]
+name = "micro_bench"
+path = "examples/micro_bench.rs"
+
+[[example]]
 name = "inspect_tokens"
 path = "examples/inspect_tokens.rs"
 

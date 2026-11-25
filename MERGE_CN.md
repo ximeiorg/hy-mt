@@ -2,7 +2,7 @@
 
 [English](MERGE.md) | **中文**
 
-本文件记录把 [hymt3](https://github.com/kingzcheung/hymt3) 的引擎并入 `hy-mt` 的过程：
+本文件记录把 `hymt3` 原型 crate 的引擎并入 `hy-mt` 的过程：
 为什么可以合并、旧实现的问题清单（带 file:line 与实测）、API 兼容性、以及验证方式。
 
 ---
@@ -201,7 +201,7 @@ HYMT_MODEL_DIRS=…/Hy-MT1.5-1.8B-FP8:…/Hy-MT2-1.8B-FP8:…/Hy-MT3-1.8B-FP8 \
 ## 5. 许可与归属
 
 * `hy-mt` 0.1（本项目原有代码）：MIT，版权归 kingzcheung。
-* 并入的引擎源自同一作者的 `hymt3`（Apache-2.0）；两处作者相同，本仓库整体继续以 **MIT** 发布，
+* 并入的引擎源自同一作者的 `hymt3` 原型（Apache-2.0）；两处作者相同，本仓库整体继续以 **MIT** 发布，
   保留本文件的来源说明。
 * 兼容层里 `TokenOutputStream` 的思路可追溯到
   [text-generation-inference](https://github.com/huggingface/text-generation-inference)（Apache-2.0）

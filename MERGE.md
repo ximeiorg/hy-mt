@@ -2,8 +2,8 @@
 
 **English** | [中文](MERGE_CN.md)
 
-This document records how the engine of [hymt3](https://github.com/kingzcheung/hymt3) was
-merged into `hy-mt`: why the two can be one, the defect list of the old implementation
+This document records how the engine of the `hymt3` prototype crate was merged into
+`hy-mt`: why the two can be one, the defect list of the old implementation
 (with `file:line` and measurements), API compatibility, and how the result was verified.
 
 ---
@@ -207,7 +207,7 @@ HYMT_MODEL_DIRS=…/Hy-MT1.5-1.8B-FP8:…/Hy-MT2-1.8B-FP8:…/Hy-MT3-1.8B-FP8 \
 ## 5. License and provenance
 
 * `hy-mt` 0.1 (the original code of this repository): MIT, copyright kingzcheung.
-* The merged engine comes from the same author's `hymt3` (Apache-2.0). Both are authored by
+* The merged engine comes from the same author's `hymt3` prototype (Apache-2.0). Both are authored by
   the same person, and this repository continues to be released under **MIT**; the
   provenance note is kept here.
 * The `TokenOutputStream` idea in the compatibility layer traces back to

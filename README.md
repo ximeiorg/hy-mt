@@ -212,6 +212,7 @@ cargo run --release --features metal --example stream_generation_example -- <mod
 cargo run --release --features metal --example translate -- --model <model-dir> --target en --text "今天天气真好。"
 cargo run --release --features metal --example quality -- <model-dir>   # the seven prompt scenarios
 cargo run --release --features metal --example bench -- <model-dir> 40
+cargo run --release --features metal --example micro_bench               # operator-level timings
 cargo run --example inspect_tokens -- <model-dir>                       # tokenizer / template inspection
 ```
 
