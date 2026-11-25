@@ -1,207 +1,217 @@
-# 合并报告：`hy-mt` 0.1 → 0.2（统一引擎）
+# Merge report: `hy-mt` 0.1 → 0.2 (unified engine)
 
-本文件记录把 [hymt3](https://github.com/kingzcheung/hymt3) 的引擎并入 `hy-mt` 的过程：
-为什么可以合并、旧实现的问题清单（带 file:line 与实测）、API 兼容性、以及验证方式。
+**English** | [中文](MERGE_CN.md)
+
+This document records how the engine of [hymt3](https://github.com/kingzcheung/hymt3) was
+merged into `hy-mt`: why the two can be one, the defect list of the old implementation
+(with `file:line` and measurements), API compatibility, and how the result was verified.
 
 ---
 
-## 1. 结论：一套引擎覆盖整个 dense 家族
+## 1. Conclusion: one engine for the whole dense family
 
-合并的依据不是"看起来像"，而是 checkpoint 级别的同一性。下面两个目录的 `config.json`
-只差 `transformers_version` 一个字段，`chat_template.jinja` 逐字节相同：
+The argument is not "they look alike" but checkpoint-level identity. The `config.json` of
+the two directories below differs in a single field, and their `chat_template.jinja` files
+are byte-identical:
 
-| 对比项 | `HY-MT1.5-1.8B-FP8` | `Hy-MT3-1.8B-FP8` |
+| | `HY-MT1.5-1.8B-FP8` | `Hy-MT3-1.8B-FP8` |
 |---|---|---|
-| `architectures` | `HunYuanDenseV1ForCausalLM` | 同 |
-| `model_type` | `hunyuan_v1_dense` | 同 |
-| vocab / hidden / layers | 120818 / 2048 / 32 | 同 |
-| heads / kv heads / head_dim | 16 / 4 / 128 | 同 |
-| `rope_scaling` | `alpha=1000, factor=1, type=dynamic` | 同 |
-| chat template | `chat_template.jinja` | **逐字节相同** |
-| 权重布局 | FP8 E4M3 + `weight_scale`，**无 `lm_head`**（tie） | 同 |
+| `architectures` | `HunYuanDenseV1ForCausalLM` | same |
+| `model_type` | `hunyuan_v1_dense` | same |
+| vocab / hidden / layers | 120 818 / 2048 / 32 | same |
+| heads / kv heads / head_dim | 16 / 4 / 128 | same |
+| `rope_scaling` | `alpha=1000, factor=1, type=dynamic` | same |
+| chat template | `chat_template.jinja` | **byte-identical** |
+| weight layout | FP8 E4M3 + `weight_scale`, **no `lm_head`** (tied) | same |
 | `transformers_version` | 4.57.1 | 4.57.6 |
-| 权重内容 | — | **不同**（`cmp` 在第 88587 字节起不同，是两次训练） |
+| weight bytes | — | **different** (`cmp` diverges at byte 88587: three distinct trainings) |
 
-即：**架构不变，变的是规模、词表、量化与训练**。所以"二合一"落点是"一套引擎 + 两套
-chat/tokenizer 族"，而不是两套模型代码：
+`Hy-MT2-1.8B` fits the same picture: identical sizes and template, with only
+`dtype` spelled `torch_dtype` (accepted through a serde alias).
+
+So the architecture never changed across generations — scale, vocabulary, quantisation and
+training did. "Merging" therefore means **one engine + two chat/tokenizer families**, not
+two model implementations:
 
 ```
 hy_mt
-├── models::CausalLm              ← 架构抽象
-│   └── models::hunyuan_dense     ← dense 家族（1.8B / 7B，bf16 / FP8）
-├── chat::ChatFormat              ← 模板族：Hy18B | Hunyuan7B
-├── tokenizer                     ← 120818(<｜hy_…｜>) 与 128k(<|…|>) 两族自适应
-└── Translator / TextGeneration   ← 上层 API（新 / 旧）
+├── models::CausalLm              ← architecture abstraction
+│   └── models::hunyuan_dense     ← dense family (1.8B / 7B, bf16 / FP8)
+├── chat::ChatFormat              ← template families: Hy18B | Hunyuan7B
+├── tokenizer                     ← detects 120818 (<｜hy_…｜>) vs 128k (<|…|>) vocabularies
+└── Translator / TextGeneration   ← public API (new / 0.1-compatible)
 ```
 
-### 版本矩阵
+### Version matrix
 
-| checkpoint | 架构 | 词表 / 模板族 | 状态 |
+| checkpoint | arch | vocab / template | status |
 |---|---|---|---|
-| `HY-MT1.5-1.8B(-FP8)` | dense | 120818 / `Hy18B` | ✅ 实测通过 |
-| `Hy-MT2-1.8B(-FP8)` | dense | 120818 / `Hy18B` | ✅ 实测通过（config 只差 `torch_dtype` 字段名） |
-| `Hy-MT3-1.8B(-FP8)` | dense | 120818 / `Hy18B` | ✅ 实测通过 |
-| `Hunyuan-MT-7B`、`HY-MT1.5-7B`、`Hy-MT3-7B`(+FP8) | dense | 128k / `Hunyuan7B` | ✅ 代码路径就绪（`torch_dtype`、数组 eos、ckpt 特有点位都已适配） |
-| `Hy-MT3-30B-A3B(-FP8)` | **MoE** | 128k / `Hunyuan7B` | ⛔ 未实现（唯一真正"结构大变"的版本） |
+| `HY-MT1.5-1.8B(-FP8)` | dense | 120 818 / `Hy18B` | ✅ verified end to end |
+| `Hy-MT2-1.8B(-FP8)` | dense | 120 818 / `Hy18B` | ✅ verified end to end (config only renames `dtype`) |
+| `Hy-MT3-1.8B(-FP8)` | dense | 120 818 / `Hy18B` | ✅ verified end to end |
+| `Hunyuan-MT-7B`, `HY-MT1.5-7B`, `Hy-MT3-7B` (+FP8) | dense | 128k / `Hunyuan7B` | ✅ code path in place (`torch_dtype`, list-valued eos and the checkpoint specifics are handled) |
+| `Hy-MT3-30B-A3B(-FP8)` | **MoE** | 128k / `Hunyuan7B` | ⛔ not implemented (the only real structural change) |
 
-三代 1.8B 的 `chat_template.jinja` **逐字节相同**，`config.json` 的差异只有
-`dtype` → `torch_dtype` 这一处字段改名（0.2 用 `#[serde(alias = "torch_dtype")]` 兼容）。
-同一引擎、同一份 prompt，三代给出的译文各不相同（`cmp` 也确认权重不同）：
+The same engine, same prompts, three generations (greedy decoding; weights are genuinely
+different, as `cmp` confirms):
 
-| 源文 | HY-MT1.5 | Hy-MT2 | Hy-MT3 |
+| source | HY-MT1.5 | Hy-MT2 | Hy-MT3 |
 |---|---|---|---|
 | 今天天气真好，我们一起去公园散步吧。(→en) | It's a beautiful day today. Let's go for a walk in the park together. | The weather is really nice today. Let's go for a walk in the park together. | The weather is really nice today; let's go for a walk in the park together. |
 | The committee approved the budget after a lengthy debate. (→zh) | 在长时间的讨论之后，委员会最终批准了这份预算方案。 | 经过长时间的讨论，委员会通过了预算。 | 委员会经过长时间辩论后批准了预算。 |
 | 混元大模型支持 102 种语言的互译。(→en) | The Hunyuan Large Model supports translation between 102 languages. | Hunyuan large model supports translation between 102 languages. | The Hunyuan large model supports mutual translation in 102 languages. |
 
-> 7B 族与 1.8B 族的模板**完全不同**（不是措辞差异）：7B 用 `<|startoftext|>` 开头、
-> `<|extra_0|>` 结束用户轮、`<|extra_4|>` 结束 system、`<|eos|>` 结束 assistant 轮，
-> 且模板**忽略 `add_generation_prompt`**。旧实现只硬编码了 1.8B 族，所以 7B 一律不可用。
+> The 7B family uses a **completely different** template, not a rephrasing: `<|startoftext|>`
+> opens a turn, `<|extra_0|>` closes the user turn, `<|extra_4|>` closes a system message,
+> `<|eos|>` closes an assistant turn, and the template **ignores `add_generation_prompt`**.
+> The old implementation hard-coded the 1.8B family only, so 7B never worked.
 
 ---
 
-## 2. 旧实现的问题（按影响排序）
+## 2. Defects of the old implementation (ordered by impact)
 
-行号对应 `main` 分支（`git show main:src/…`）。
+Line numbers refer to `main` (`git show main:src/…`).
 
-### A. 阻断级：FP8 checkpoint 根本加载不了
+### A. Blocker: FP8 checkpoints cannot be loaded at all
 
-| # | 位置 | 问题 |
+| # | location | problem |
 |---|---|---|
-| A1 | `Cargo.toml:18-19` | 两个 candle 依赖**硬编码 `features = ["cuda"]`** → 无 GPU 的机器/CI 无法构建，也没有 metal/accelerate 选择 |
-| A2 | `Cargo.toml:27-28` | `[patch.crates-io] cudarc = git tag` + candle 来自个人 fork（0.9.2-alpha.2）→ 下游不可复现 |
-| A3 | `lib.rs:48` | `VarBuilder::from_mmaped_safetensors(..., DType::F32, ...)` → 只支持 bf16/f32 权重；FP8 的 `F8_E4M3 + weight_scale` 无法读 |
-| A4 | `model.rs:525` | 无条件 `vb.pp("lm_head")` → 两个 FP8 checkpoint **都没有 `lm_head.weight`**（`config.tie_word_embeddings=true`），直接报找不到张量 |
+| A1 | `Cargo.toml:18-19` | both candle dependencies **hard-code `features = ["cuda"]`** → no way to build on a machine without a GPU, and no metal/accelerate choice |
+| A2 | `Cargo.toml:27-28` | `[patch.crates-io] cudarc = git tag` plus a personal candle fork (0.9.2-alpha.2) → not reproducible downstream |
+| A3 | `lib.rs:48` | `VarBuilder::from_mmaped_safetensors(..., DType::F32, ...)` → only bf16/f32 weights; FP8 `F8_E4M3 + weight_scale` cannot be read |
+| A4 | `model.rs:525` | unconditional `vb.pp("lm_head")` → the FP8 checkpoints **have no `lm_head.weight`** (`tie_word_embeddings=true`) and fail with a missing-tensor error |
 
-**验证**：读两个 checkpoint 的 safetensors header（不下载整模型）：
+Evidence — reading the safetensors headers (no full download needed):
 
 ```
 Hy-MT1.5-1.8B-FP8: 802 tensors, lm_head present: False, dtypes ['BF16','F32','F8_E4M3']
+Hy-MT2-1.8B-FP8  : 802 tensors, lm_head present: False, dtypes ['BF16','F32','F8_E4M3']
 Hy-MT3-1.8B-FP8  : 802 tensors, lm_head present: False, dtypes ['BF16','F32','F8_E4M3']
 ```
 
-也就是说：旧实现**只能**跑 0.1 时代的 bf16 单文件发布（那份确实带重复的 `lm_head.weight`），
-现在机器上的两个 FP8 模型它一个也打不开。新版按 config 的 `tie_word_embeddings` 决定 tie，
-并按 `_scale` 反量化 FP8。
+In other words the old implementation could only run the bf16 single-file release of its own
+era (which does ship a duplicated `lm_head.weight`); it cannot open any of the FP8
+checkpoints now on disk. 0.2 ties the head according to `tie_word_embeddings` and
+dequantises FP8 through the per-tensor `weight_scale`.
 
-### B. 正确性
+### B. Correctness
 
-| # | 位置 | 问题 | 影响 |
+| # | location | problem | impact |
 |---|---|---|---|
-| B1 | `lib.rs:145` | `context_window = 512`，只取最后 512 token 作为上下文 | 长文翻译**静默丢掉输入开头**，译文出现漏译；输出超过窗口也会自截断 |
-| B2 | `lib.rs:145-150` + `model.rs` | 窗口滑动后 `position_ids` 仍从 0 重算（`Tensor::arange(0, seq_len)`） | 超过 512 token 时绝对位置全错，注意力位置信息失真 |
-| B3 | `lib.rs:204` | `if next_token == 120020` 硬编码 EOS | 7B 族（`<|eos|>`=127960）、`Hunyuan-MT-7B`（127960）永远停不下来；只能靠 B5 的兜底 |
-| B4 | `prompt.rs:24` | 用户轮以 `<｜hy_place▁holder▁no▁8｜>`（120026，模板里 `add_generation_prompt=false` 分支）结尾 | 与官方模板不一致（应为 `<｜hy_Assistant｜>`=120007）。实测影响有限但确实偏离 |
-| B5 | `lib.rs:211-212` | "连续 3 个相同 token 就停" | 会切断合法输出（`---`、`。。。`、连续重复词），且掩盖了 B3 |
-| B6 | `prompt.rs:47-56` | `Vec<Message>` = 每条消息各自生成 `<BOS><USER>…<NO_GEN>` 再 `\n` 拼接 | 多轮对话出现多个 BOS、没有 assistant 轮标记，结构错误 |
-| B7 | `config.rs:14,38` | 配置字段全部必填（无 serde 默认） | `HY-MT1.5-7B`/`Hunyuan-MT-7B` 用 `torch_dtype` 而非 `dtype` → 解析直接失败；`Hy-MT3-*` 新增 `quantization_config` 同样炸 |
-| B8 | `lib.rs:128` | `encode(prompt, true)` 未关闭 `tokenizer.json` 里的 truncation/padding | `Hy-MT3-1.8B` 的 tokenizer 声明 `padding: Fixed(8192)`，一旦命中会把 prompt 补齐到 8192 |
+| B1 | `lib.rs:145` | `context_window = 512`; only the last 512 tokens are used | long documents silently **lose their beginning** (omissions in the translation); output beyond the window is cut too |
+| B2 | `lib.rs:145-150` + `model.rs` | after the window slides, `position_ids` are still rebuilt from 0 (`Tensor::arange(0, seq_len)`) | absolute positions are wrong beyond 512 tokens, so positional information is distorted |
+| B3 | `lib.rs:204` | `if next_token == 120020`, hard-coded EOS | the 7B family (`<|eos|>` = 127960) and `Hunyuan-MT-7B` never stop; only B5's fallback ends them |
+| B4 | `prompt.rs:24` | the user turn ends with `<｜hy_place▁holder▁no▁8｜>` (120026, the `add_generation_prompt=false` branch) | deviates from the official template (it should be `<｜hy_Assistant｜>` = 120007); measured impact is small but real |
+| B5 | `lib.rs:211-212` | "stop after 3 identical consecutive tokens" | truncates legitimate output (`---`, `。。。`, repeated words) and masks B3 |
+| B6 | `prompt.rs:47-56` | `Vec<Message>` renders each message as its own `<BOS><USER>…<NO_GEN>` block and joins with `\n` | multi-turn prompts contain several BOS tokens and no assistant turn markers |
+| B7 | `config.rs:14,38` | every config field is required (no serde defaults) | `HY-MT1.5-7B`/`Hunyuan-MT-7B` use `torch_dtype` instead of `dtype` → parsing fails; `Hy-MT3-*` adds `quantization_config` → same |
+| B8 | `lib.rs:128` | `encode(prompt, true)` without disabling the truncation/padding of `tokenizer.json` | `Hy-MT3-1.8B`'s tokenizer declares `padding: Fixed(8192)`, which would pad a prompt to 8192 tokens |
+| B9 | `prompt.rs:23-24` | `Prompter for &str` semantics: 0.1 **wraps** plain text | while merging, a "pass-through" variant made the model continue raw text; it emitted the source sentence 128 times. 0.2 restores wrapping (with the assistant terminator) and adds `prompt::RawPrompt` for already-rendered prompts |
 
-**B4 实测**（同一 prompt，仅替换结尾标记，greedy，`HY-MT1.5-1.8B-FP8`）：
+**B4 measurement** (same prompt, only the final marker differs, greedy, `HY-MT1.5-1.8B-FP8`):
 
-| 源文 | 旧（NO_GEN） | 新（ASSISTANT） |
+| source | old (`NO_GEN`) | fixed (`ASSISTANT`) |
 |---|---|---|
 | 今天天气真好。 | `It's a beautiful day today.` | `It's a beautiful day today.` |
 | The quick brown fox… | `那只快速的棕色狐狸，跳过了那只懒惰的狗。` | `那只快速的棕色狐狸跳过了那只懒惰的狗。` |
-| 我们明天上午十点开会。 | `We will have a meeting tomorrow at 10 a.m.` | 同 |
+| 我们明天上午十点开会。 | `We will have a meeting tomorrow at 10 a.m.` | same |
 
-→ 3 条里 1 条出现多余逗号。所以 B4 是**确实偏离模板、但影响有限**，不能当作"翻译效果差异"的唯一解释；
-真正拖后腿的是 A（FP8 打不开）、B1/B2（长文截断）、B3（7B 停不下来）。
+→ 1 of 3 sentences gained a spurious comma. B4 is a genuine deviation from the template but
+a *minor* one; it is not the explanation for the quality gap. What actually hurts is
+A (FP8 cannot load), B1/B2 (long-input truncation) and B3 (7B never stops).
 
-### B9. `Prompter for &str` 语义（迁移时的新发现）
+### C. Performance
 
-旧实现里 `&str`/`String` 会被**包成** `<BOS><USER>{content}<NO_GEN>`；迁移时一度写成"原样透传"，
-结果模型看到裸文本就顺着续写（实测出现 128 token 复读 `The quick brown fox jumps over the lazy dog.`）。
-0.2 恢复"纯文本 = 一条 user 消息"的语义（终标记改为 `<ASSISTANT>`），并新增
-`prompt::RawPrompt(&str)` 给"已经是完整 prompt"的调用方。这条也解释了为什么 0.1 的用户代码
-`generate("Translate … Hello, world!", 512)` 是能工作的。
-
-### C. 性能
-
-| # | 位置 | 问题 | 新版 |
+| # | location | problem | 0.2 |
 |---|---|---|---|
-| C1 | `lib.rs:145-190` | **没有 KV cache**，每生成 1 个 token 重算整个前缀 | `KVCache` + 增量 decode |
-| C2 | `utils.rs:44` | `expand().reshape()` 做 GQA repeat；Metal 上该路径 ~1 GB/s | `stack` + reshape（M1 实测 1838 µs → 28 µs @512 ctx） |
-| C3 | `model.rs:494` | 每步都重算 RoPE 的 cos/sin（含 matmul + 三角函数） | 位置表按需增长并缓存 |
-| C4 | `utils.rs:20-39` / `150` / `161` | RoPE 用 narrow+neg+cat 组合、mask 用 `broadcast_as` 新建整型张量 | candle 融合 `rotary_emb::rope` 内核；mask 直接预算 |
-| C5 | `lib.rs:48` | 全模型 f32（1.8B ≈ 7.2 GB） | 按设备选 f16/bf16/f32；1.8B f16 ≈ 4.1 GB（含 tie 后的 lm_head） |
-| C6 | `model.rs:256` | `is_causal=true` 时 `create_causal_mask` 算出的 mask 被丢弃，SDPA 内部再造一次三角 mask | 只构造真正需要的 mask |
+| C1 | `lib.rs:145-190` | **no KV cache**: the entire prefix is recomputed for every generated token | `KVCache` + incremental decoding |
+| C2 | `utils.rs:44` | GQA repeat via `expand().reshape()`; that path runs at ~1 GB/s on Metal | `stack` + reshape (M1, 512 ctx: 1838 µs → 28 µs) |
+| C3 | `model.rs:494` | RoPE cos/sin recomputed on every step (matmul + trigonometry) | position table grown on demand and cached |
+| C4 | `utils.rs:20-39`, `150`, `161` | RoPE assembled from narrow+neg+cat, masks rebuilt with `broadcast_as` | candle's fused `rotary_emb::rope` kernel; masks precomputed once |
+| C5 | `lib.rs:48` | the whole model in f32 (1.8B ≈ 7.2 GB) | dtype chosen per device; 1.8B f16 ≈ 4.1 GB (including the tied head) |
+| C6 | `model.rs:256` | with `is_causal=true` the `create_causal_mask` result is discarded and SDPA builds another triangular mask | only the masks that are actually used are built |
 
-### D. 工程/API
+### D. Engineering / API
 
-| # | 问题 |
+| # | problem |
 |---|---|
-| D1 | `lib.rs:180` 等处在库里 `print!` 输出，调用方无法捕获、并发会串行化 |
-| D2 | 所有错误都压成 `candle_core::Error::msg`，丢失分类 |
-| D3 | `generate(prompt, max_length)` 的 `max_length` 实际是"新 token 数"，命名误导 |
-| D4 | 无 stop token、无 seed/采样参数的单次覆盖、无 Session 级控制 |
-| D5 | `tokenizers 0.22` 默认特性会拉 oniguruma（C 依赖） |
+| D1 | `print!` calls inside library functions (`lib.rs:180` etc.): callers cannot capture output, and concurrent use serialises on stdout |
+| D2 | every error is flattened into `candle_core::Error::msg`, losing classification |
+| D3 | `generate(prompt, max_length)` — `max_length` is really "number of new tokens", which is misleading |
+| D4 | no stop tokens, no per-call seed/sampling override, no session-level control |
+| D5 | `tokenizers 0.22` with default features pulls in oniguruma (a C dependency) |
 
 ---
 
-## 3. 新版做了什么
+## 3. What 0.2 does instead
 
-### 引擎（来自 hymt3，Apache-2.0，同一作者）
+### Engine (from hymt3, Apache-2.0, same author)
 
-* 配置驱动：`config.json` 决定层数/维度/头数/RoPE/tie；`torch_dtype` 别名、数组 `eos_token_id`、
-  `use_cla` 显式拒绝。
-* 权重：mmap safetensors（支持分片）、FP8 E4M3 查表反量化、`tie_word_embeddings` 优先 tie
-  （省 0.5 GB）、f16/bf16/f32。
-* 数学：`ntk_alpha` RoPE（`base = theta * alpha^(dim/(dim-2))`，全家族一致）、QK-RMSNorm 在
-  RoPE **之后**、GQA、SwiGLU、tied lm_head、因果掩码、KV cache。
-* 运行：`Session`（逐 token）、`generate`（回调）、增量 detokenizer（多字节不截断）。
-* 模板：`ChatFormat::{Hy18B, Hunyuan7B}` 两族，按词表自动识别，7B 的怪癖（system 作为 head、
-  空首条消息、忽略 `add_generation_prompt`）逐行复刻并有单测。
-* 采样：temperature / top-k / top-p / repetition penalty（含窗口），自带 PRNG。
-* 翻译：模型卡里的 7 类 prompt（默认/术语/风格/个性化/分隔符/结构化/背景）× 中英双语，
-  语言代码→全称映射。
+* Configuration driven: `config.json` determines layers/dims/heads/RoPE/tying;
+  `torch_dtype` alias, list-valued `eos_token_id`, explicit rejection of `use_cla`.
+* Weights: mmapped safetensors (sharded files supported), FP8 E4M3 table dequantisation,
+  `tie_word_embeddings` honoured (saves 0.5 GB), f16/bf16/f32.
+* Maths: `ntk_alpha` RoPE (`base = theta * alpha^(dim/(dim-2))`, identical across the
+  family), QK-RMSNorm **after** RoPE, GQA, SwiGLU, tied `lm_head`, causal masking, KV cache.
+* Runtime: `Session` (token by token), `generate` (callback), incremental detokeniser that
+  never splits multi-byte characters.
+* Templates: `ChatFormat::{Hy18B, Hunyuan7B}`, auto-detected from the vocabulary; the 7B
+  quirks (system message as head, empty first message, ignored `add_generation_prompt`) are
+  reproduced line by line and covered by unit tests.
+* Sampling: temperature / top-k / top-p / repetition penalty (with window), own PRNG.
+* Translation: the seven prompt templates of the model card (default, terminology, style,
+  personalisation, delimiters, structured data, background) in Chinese and English, plus
+  code→full-name language mapping.
 
-### 兼容层
+### Compatibility layer
 
 | 0.1 | 0.2 |
 |---|---|
-| `hy_mt::TextGeneration::from_pretrained(path, &device)` | 保留 |
-| `TextGeneration::generate(prompt, max_length)` | 保留（不再 print，返回 `Result<String>`） |
-| `TextGeneration::generate_stream_iter(..)` | 保留（新增 `try_next()` 可看错误） |
-| `prompt::{Prompter, Message}` | 保留（`Message` 从 `chat` 重导出） |
-| `logits_processor::{Sampling, LogitsProcessor}` | 保留（映射到新采样器） |
-| `tokenizer::TokenOutputStream` | 保留（改为 O(新 token) 增量解码） |
-| `config::HunYuanDenseV1Config` | 保留为 `Config` 的类型别名 |
-| `model::{HunyuanDenseV1ForCausalLM, …}`、`masking_utils::*` | 移除（由 `models::CausalLm` + `hunyuan_dense` 取代，见下） |
-| `TextGeneration::tokenizer()` 返回 `&TokenOutputStream` | 改为返回 `&Tokenizer`；需要原始 HF 句柄用 `tokenizer().inner()` |
+| `hy_mt::TextGeneration::from_pretrained(path, &device)` | kept |
+| `TextGeneration::generate(prompt, max_length)` | kept (no longer prints; returns `Result<String>`) |
+| `TextGeneration::generate_stream_iter(..)` | kept (new `try_next()` exposes errors) |
+| `prompt::{Prompter, Message}` | kept (`Message` re-exported from `chat`) |
+| `logits_processor::{Sampling, LogitsProcessor}` | kept (mapped onto the new sampler) |
+| `tokenizer::TokenOutputStream` | kept (now decodes only the new tail, O(new tokens)) |
+| `config::HunYuanDenseV1Config` | kept as a type alias of `Config` |
+| `model::{HunyuanDenseV1ForCausalLM, …}`, `masking_utils::*` | removed (replaced by `models::CausalLm` + `hunyuan_dense`) |
+| `TextGeneration::tokenizer()` returning `&TokenOutputStream` | now returns `&Tokenizer`; use `tokenizer().inner()` for the raw HF handle |
 
-新增（推荐）API：`Translator::{translate, translate_with, translate_stream, translate_batch,
-chat, chat_stream, start_session, encode_chat}`、`Session`、`TranslationRequest`、
-`GenerateConfig`、`ModelOptions::device/dtype`、`HYMT_DEVICE`。
+New (recommended) API: `Translator::{translate, translate_with, translate_stream,
+translate_batch, chat, chat_stream, start_session, encode_chat}`, `Session`,
+`TranslationRequest`, `GenerateConfig`, `ModelOptions::device/dtype`, `HYMT_DEVICE`.
 
 ---
 
-## 4. 实测（Apple M1, 16 GB, f16, Metal）
+## 4. Measurements (Apple M1, 16 GB, f16, Metal)
 
-| 模型 | 短上下文（14 tok） | 长上下文（518 tok） | 加载 |
+| model | short context (14 tokens) | long context (518 tokens) | load |
 |---|---|---|---|
-| `HY-MT1.5-1.8B-FP8` | 14.3 tok/s（70 ms/token） | 14.0 tok/s（71 ms/token） | ~6 s |
-| `Hy-MT2-1.8B-FP8` | 13.0 tok/s（77 ms/token） | 12.5 tok/s（80 ms/token） | ~6 s |
-| `Hy-MT3-1.8B-FP8` | 15.0 tok/s（67 ms/token） | 12.0 tok/s（84 ms/token） | ~6 s |
+| `HY-MT1.5-1.8B-FP8` | 14.3 tok/s (70 ms/token) | 14.0 tok/s (71 ms/token) | ~6 s |
+| `Hy-MT2-1.8B-FP8` | 13.0 tok/s (77 ms/token) | 12.5 tok/s (80 ms/token) | ~6 s |
+| `Hy-MT3-1.8B-FP8` | 15.0 tok/s (67 ms/token) | 12.0 tok/s (84 ms/token) | ~6 s |
 
-内存：f16 权重 ≈ 4.1 GB；KV cache 64 KB/token；预填充 518 token ≈ 0.12 s（Metal 内核已缓存时）。
+Memory: ~4.1 GB of f16 weights; KV cache 64 KB/token; prefill of 518 tokens ≈ 0.12 s
+(with warm Metal kernels).
 
-端到端测试（两个 checkpoint 都跑）：
+End-to-end tests (all generations):
 
 ```bash
 HYMT_MODEL_DIRS=…/Hy-MT1.5-1.8B-FP8:…/Hy-MT2-1.8B-FP8:…/Hy-MT3-1.8B-FP8 \
   cargo test --release --features metal --test model -- --test-threads=1 --nocapture
-# 9 passed（三代 checkpoint 全部通过）
+# 9 passed
 ```
 
 ---
 
-## 5. 许可与归属
+## 5. License and provenance
 
-* `hy-mt` 0.1（本项目原有代码）：MIT，版权归 kingzcheung。
-* 并入的引擎源自同一作者的 `hymt3`（Apache-2.0）；两处作者相同，本仓库整体继续以 **MIT** 发布，
-  保留本文件的来源说明。
-* 兼容层里 `TokenOutputStream` 的思路可追溯到
-  [text-generation-inference](https://github.com/huggingface/text-generation-inference)（Apache-2.0）
-  与 candle 示例。
-* 模型权重与 tokenizer 仍遵循混元官方许可（见各 checkpoint 内 `License.txt`）。
+* `hy-mt` 0.1 (the original code of this repository): MIT, copyright kingzcheung.
+* The merged engine comes from the same author's `hymt3` (Apache-2.0). Both are authored by
+  the same person, and this repository continues to be released under **MIT**; the
+  provenance note is kept here.
+* The `TokenOutputStream` idea in the compatibility layer traces back to
+  [text-generation-inference](https://github.com/huggingface/text-generation-inference)
+  (Apache-2.0) and the candle examples.
+* Model weights and tokenizers remain under Tencent Hunyuan's license (see `License.txt`
+  inside each checkpoint).

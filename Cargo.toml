@@ -19,7 +19,9 @@ include = [
     "tests/**/*.rs",
     "Cargo.toml",
     "README.md",
+    "README_CN.md",
     "MERGE.md",
+    "MERGE_CN.md",
     "LICENSE",
 ]
 

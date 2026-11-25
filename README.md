@@ -2,120 +2,136 @@
 
 [![Crates.io](https://img.shields.io/crates/v/hy-mt.svg)](https://crates.io/crates/hy-mt) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org)
 
-基于 [candle](https://github.com/huggingface/candle) 的**腾讯混元 MT 翻译模型** Rust 推理库：
-一套引擎覆盖整个 dense 家族（HY-MT1.5 / Hy-MT3，1.8B / 7B，bf16 / FP8），无需 Python、PyTorch、transformers。
+**English** | [中文](README_CN.md)
 
-* 直接加载官方 `*-FP8`（compressed-tensors）与 bf16 权重，加载时反量化到 f16/bf16/f32
-* Apple Metal、CUDA、CPU（Accelerate / MKL）后端，feature 可叠加、运行时选设备
-* 两套 chat 模板族自适应：1.8B 的 `<｜hy_…｜>` 与 7B 的 `<|startoftext|>` / `<|extra_N|>`
-* KV cache + 增量 detokenizer，流式输出不截断多字节字符
-* 模型卡给出的 7 类翻译 prompt（术语、风格、个性化、分隔符、结构化数据、背景信息…）中英双语
-* 保留 0.1 的 `TextGeneration` API，老代码只需换 crate 版本
+Rust inference for Tencent Hunyuan's **MT translation models**, built on
+[candle](https://github.com/huggingface/candle). One engine covers the whole dense
+family (HY-MT1.5 / Hy-MT2 / Hy-MT3, 1.8B / 7B, bf16 / FP8) — no Python, PyTorch or
+transformers required.
 
-## 支持的模型
+* Loads the official `*-FP8` (compressed-tensors) and bf16 checkpoints, dequantising
+  to f16/bf16/f32 at load time
+* Apple Metal, CUDA and CPU (Accelerate / MKL) backends; features are additive and
+  the device is chosen at runtime
+* Both chat template families, auto-detected: `<｜hy_…｜>` for 1.8B, `<|startoftext|>` /
+  `<|extra_N|>` for 7B
+* KV cache and an incremental detokeniser, so streaming never splits a multi-byte
+  character
+* The seven translation prompt templates documented in the model card (terminology,
+  style, personalisation, delimiters, structured data, background…), in Chinese and
+  English
+* Keeps the `TextGeneration` API of 0.1 — existing code only needs a version bump
 
-| checkpoint | 架构 | 词表 / 模板族 | 状态 |
+## Supported checkpoints
+
+| checkpoint | arch | vocab / template | status |
 |---|---|---|---|
-| `HY-MT1.5-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
-| `Hy-MT2-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
-| `Hy-MT3-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
-| `Hunyuan-MT-7B`、`HY-MT1.5-7B`、`Hy-MT3-7B`(+FP8) | dense | 128k / `Hunyuan7B` | ✅ 代码路径就绪 |
-| `Hy-MT3-30B-A3B`(+FP8) | **MoE** | 128k / `Hunyuan7B` | ⛔ 未实现 |
+| `HY-MT1.5-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ verified end to end |
+| `Hy-MT2-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ verified end to end |
+| `Hy-MT3-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ verified end to end |
+| `Hunyuan-MT-7B`, `HY-MT1.5-7B`, `Hy-MT3-7B` (+FP8) | dense | 128k / `Hunyuan7B` | ✅ code path in place |
+| `Hy-MT3-30B-A3B` (+FP8) | **MoE** | 128k / `Hunyuan7B` | ⛔ not implemented |
 
-架构来自 `config.json`（`hunyuan_v1_dense`），所以同架构的版本**不需要改代码**，只需要换模型目录。
-1.8B 与 7B 的差异只是规模 + 词表 + 模板族；FP8 与 bf16 的差异只是权重存储方式；
-`Hy-MT2-1.8B` 与 `HY-MT1.5-1.8B`/`Hy-MT3-1.8B` 的 `config.json` 只差一个 `torch_dtype` 字段名
-（已用 serde 别名兼容），`chat_template.jinja` 逐字节相同。
+Everything is driven by `config.json` (`hunyuan_v1_dense`), so a checkpoint of the
+same architecture needs **no code change** — just point it at another directory.
+1.8B vs 7B only differs in size, vocabulary and template family; FP8 vs bf16 only
+differs in how weights are stored. `Hy-MT2-1.8B` and its neighbours differ by a
+single config field name (`torch_dtype`, accepted through a serde alias), and their
+`chat_template.jinja` files are byte-identical.
 
-同一引擎跑三代 1.8B（贪心解码，同一批句子，实测）：
+The same engine on three generations (greedy decoding, identical prompts):
 
-| 源文 | HY-MT1.5 | Hy-MT2 | Hy-MT3 |
+| source | HY-MT1.5 | Hy-MT2 | Hy-MT3 |
 |---|---|---|---|
 | 今天天气真好，我们一起去公园散步吧。(→en) | It's a beautiful day today. Let's go for a walk in the park together. | The weather is really nice today. Let's go for a walk in the park together. | The weather is really nice today; let's go for a walk in the park together. |
 | The committee approved the budget after a lengthy debate. (→zh) | 在长时间的讨论之后，委员会最终批准了这份预算方案。 | 经过长时间的讨论，委员会通过了预算。 | 委员会经过长时间辩论后批准了预算。 |
 | 混元大模型支持 102 种语言的互译。(→en) | The Hunyuan Large Model supports translation between 102 languages. | Hunyuan large model supports translation between 102 languages. | The Hunyuan large model supports mutual translation in 102 languages. |
 
-## 安装
+## Install
 
 ```toml
 [dependencies]
 hy-mt = "0.2"
 
-# 按需选一个后端（可叠加，运行时再挑设备）
+# pick one backend (features are additive, the device is chosen at runtime)
 # hy-mt = { version = "0.2", features = ["metal"] }
 # hy-mt = { version = "0.2", features = ["cuda"] }
 ```
 
-作为库构建：
+Building the repository:
 
 ```bash
-cargo build --release --features metal      # Apple GPU（推荐，f16）
-cargo build --release                       # CPU（f32）
+cargo build --release --features metal      # Apple GPU (recommended, f16)
+cargo build --release                       # CPU (f32)
 cargo build --release --features "metal,accelerate"
 ```
 
-## 快速开始
+## Quick start
 
-### 1. 翻译 API（推荐）
+### 1. Translation API (recommended)
 
 ```rust
 use hy_mt::{TranslationRequest, Translator};
 
 let mut translator = Translator::from_pretrained("/models/Hy-MT3-1.8B-FP8")?;
 
-// 默认模板
+// default template
 println!("{}", translator.translate("今天天气真好。", "en")?.text);
 
-// 带术语 / 风格约束
+// with terminology / style constraints
 let req = TranslationRequest::new("The Hunyuan-MT3 model runs on Apple silicon.", "zh")
     .term("Hunyuan-MT3", "混元 MT3")
     .term("Apple silicon", "苹果芯片")
     .style("正式");
 println!("{}", translator.translate_with(&req, None)?.text);
 
-// 流式
+// streaming
 translator.translate_stream(&req, None, |delta| print!("{delta}"))?;
 ```
 
-设备与精度：
+Device and precision:
 
 ```rust
 use hy_mt::{DType, Device, Translator};
 
 let t = Translator::builder(dir)
-    .device(Device::Cpu)          // 或 Device::new_metal(0)? / Device::new_cuda(0)?
+    .device(Device::Cpu)          // or Device::new_metal(0)? / Device::new_cuda(0)?
     .dtype(DType::F16)
     .verbose(true)
     .load()?;
 ```
 
-选择顺序：显式 `device(..)` > `HYMT_DEVICE=cpu|metal[:N]|cuda[:N]` > 自动（Metal → CUDA → CPU）。
-默认 dtype 随设备：Metal→f16、CUDA→bf16、CPU→f32。
+Selection order: explicit `device(..)`, then `HYMT_DEVICE=cpu|metal[:N]|cuda[:N]`,
+then Metal, CUDA and finally the CPU. The default weight dtype follows the device:
+f16 on Metal, bf16 on CUDA, f32 on CPU.
 
-### 2. 原始生成 API（0.1 兼容）
+### 2. Raw generation API (0.1 compatible)
 
 ```rust
 use hy_mt::{Device, TextGeneration};
 
 let mut model = TextGeneration::from_pretrained("/models/HY-MT1.5-1.8B-FP8", &Device::Cpu)?;
 
-// 一次性
+// one shot
 let answer = model.generate("将以下文本翻译为英语：你好，世界。", 256)?;
 println!("{answer}");
 
-// 流式
+// streaming
 for delta in model.generate_stream_iter("将以下文本翻译为英语：你好，世界。", 256) {
     print!("{delta}");
 }
 ```
 
-### 3. 逐 token 控制
+Plain strings are treated as **user content** and wrapped in the chat template (as in
+0.1). Use `hy_mt::prompt::RawPrompt` when you already have a rendered prompt.
+
+### 3. Token-level control
 
 ```rust
 use hy_mt::{GenerateConfig, Message, SamplingConfig};
 
 let cfg = GenerateConfig {
-    sampling: SamplingConfig { temperature: 0.0, ..SamplingConfig::greedy() },
+    sampling: SamplingConfig::greedy(),
     max_new_tokens: 512,
     stop_token_ids: vec![],
 };
@@ -128,100 +144,111 @@ let out = session.into_output()?;
 println!("\n{} tokens, {:?}", out.generated_tokens, out.finish_reason);
 ```
 
-## 翻译 Prompt
+## Translation prompts
 
-`TranslationRequest` 覆盖模型卡列出的 7 类场景，按优先级选模板：
+`TranslationRequest` covers the seven scenarios of the model card; the most specific
+constraint wins:
 
-1. `format_type` → 结构化数据（JSON/YAML/HTML…，保护 key 与 `{{var}}` 占位符）
-2. `background` → 背景信息
-3. `preferences` → 个性化任务列表
-4. `terminology` → 术语表
-5. `style` → 风格约束
-6. `preserve_delimiters` → 分隔符保持
-7. 默认模板
+1. `format_type` — structured data (JSON/YAML/HTML…, keys and `{{var}}` placeholders preserved)
+2. `background` — background information
+3. `preferences` — personalisation task list
+4. `terminology` — glossary
+5. `style` — style constraint
+6. `preserve_delimiters` — keep delimiters verbatim
+7. default template
 
-指令语言自动选择（目标语言是中文 → 中文指令，否则英文），也可 `prompt_lang(PromptLang::Zh)` 指定。
-语言参数支持代码（`"en"`、`"zh-Hans"`）或全称（`"English"`、`"中文"`），内部按模型卡要求换成全称。
+The instruction language is picked automatically (Chinese target → Chinese
+instruction, otherwise English); force it with `prompt_lang(PromptLang::Zh)`.
+Languages may be given as codes (`"en"`, `"zh-Hans"`) or full names (`"English"`,
+`"中文"`); they are expanded to full names as the model card requires.
 
-## 后端 features
+## Backend features
 
-每个后端 feature 都必须同时转发给 `candle-core` 与 `candle-nn`：
+Every backend feature must be forwarded to **both** candle crates:
 
 ```toml
 metal = ["candle-core/metal", "candle-nn/metal"]
 ```
 
-前者管存储/矩阵乘，后者提供本库调用的融合算子（`rms_norm`、`rotary_emb::rope`、`softmax`）的
-GPU kernel，且是 `#[cfg(feature = "metal")]` / `#[cfg(feature = "cuda")]` 门控的。只开一边能编译
-通过，但运行时会报 `no metal implementation for op ...`。
+`candle-core` owns storage and matmuls, while `candle-nn` provides the GPU kernels of
+the fused ops this crate calls (`rms_norm`, `rotary_emb::rope`, `softmax`), and those
+are gated behind `#[cfg(feature = "metal")]` / `#[cfg(feature = "cuda")]`. Enabling
+only one side compiles but fails at runtime with `no metal implementation for op …`.
 
-| feature | 后端 | 说明 |
+| feature | backend | notes |
 |---|---|---|
-| `cpu`（默认） | CPU | candle 始终编译 CPU 后端，flag 只是让选择显式化 |
-| `metal` | Apple GPU | 仅 macOS，建议 f16 |
-| `metal-debug-labels` | Apple GPU | command encoder 加 label，调试用 |
-| `accelerate` | CPU | Apple Accelerate BLAS（macOS/iOS） |
-| `cuda` / `cudnn` | NVIDIA GPU | `cudnn` 隐含 `cuda` |
-| `mkl` | CPU | Intel MKL（构建时下载） |
+| `cpu` (default) | CPU | candle always compiles the CPU backend; the flag makes the choice explicit |
+| `metal` | Apple GPU | macOS only, f16 recommended |
+| `metal-debug-labels` | Apple GPU | command-encoder labels, for debugging |
+| `accelerate` | CPU | Apple Accelerate BLAS (macOS/iOS) |
+| `cuda` / `cudnn` | NVIDIA GPU | `cudnn` implies `cuda` |
+| `mkl` | CPU | Intel MKL (downloaded at build time) |
 
-## 性能
+## Performance
 
-Apple M1（8 核 GPU / 16 GB），f16 + Metal，`cargo build --release`：
+Apple M1 (8-core GPU, 16 GB), f16 + Metal, `cargo build --release`:
 
-| 模型 | 短上下文（14 token） | 长上下文（518 token） | 加载 |
+| model | short context (14 tokens) | long context (518 tokens) | load |
 |---|---|---|---|
-| `HY-MT1.5-1.8B-FP8` | 14.3 tok/s（70 ms/token） | 14.0 tok/s（71 ms/token） | ~6 s |
-| `Hy-MT3-1.8B-FP8` | 15.0 tok/s（67 ms/token） | 12.0 tok/s（84 ms/token） | ~6 s |
+| `HY-MT1.5-1.8B-FP8` | 14.3 tok/s (70 ms/token) | 14.0 tok/s (71 ms/token) | ~6 s |
+| `Hy-MT2-1.8B-FP8` | 13.0 tok/s (77 ms/token) | 12.5 tok/s (80 ms/token) | ~6 s |
+| `Hy-MT3-1.8B-FP8` | 15.0 tok/s (67 ms/token) | 12.0 tok/s (84 ms/token) | ~6 s |
 
-* 内存：f16 权重 ≈ 4.1 GB；KV cache 64 KB/token
-* 预填充：518 token ≈ 0.12 s（Metal 内核已缓存时；首次运行会有一次 shader 编译，`Translator` 默认在加载阶段预热）
-* CPU（f16）：≈ 4.4 tok/s；CPU f32 更快但 1.8B 需 7.2 GB
+* Memory: ~4.1 GB of f16 weights; KV cache 64 KB/token
+* Prefill: 518 tokens in ~0.12 s (with warm Metal kernels; the first run pays a one-off
+  shader compilation, and `Translator` warms up during `load()` by default)
+* CPU (f16): ~4.4 tok/s; CPU f32 is faster but needs 7.2 GB for the 1.8B model
 
 ```bash
-cargo run --release --features metal --example bench -- <model-dir> 40        # 短上下文
-cargo run --release --features metal --example bench -- <model-dir> 20 500    # 长上下文
+cargo run --release --features metal --example bench -- <model-dir> 40        # short context
+cargo run --release --features metal --example bench -- <model-dir> 20 500    # long context
 ```
 
-## 示例
+## Examples
 
 ```bash
 cargo run --release --features metal --example text_generation_example -- <model-dir>
 cargo run --release --features metal --example stream_generation_example -- <model-dir>
 cargo run --release --features metal --example translate -- --model <model-dir> --target en --text "今天天气真好。"
-cargo run --release --features metal --example quality -- <model-dir>   # 7 类 prompt 场景
+cargo run --release --features metal --example quality -- <model-dir>   # the seven prompt scenarios
 cargo run --release --features metal --example bench -- <model-dir> 40
-cargo run --example inspect_tokens -- <model-dir>                       # 分词 / 模板检查
+cargo run --example inspect_tokens -- <model-dir>                       # tokenizer / template inspection
 ```
 
-## 测试
+## Testing
 
 ```bash
-cargo test                       # 单元测试（不需要模型）
+cargo test                       # unit tests (no checkpoint needed)
 cargo test --features metal
 
-# 端到端（会加载真实权重；建议串行，避免同时驻留多份模型）
+# end to end (loads real weights; run serially so only one model is resident)
 HYMT_MODEL_DIRS=/path/HY-MT1.5-1.8B-FP8:/path/Hy-MT2-1.8B-FP8:/path/Hy-MT3-1.8B-FP8 \
   cargo test --release --features metal --test model -- --test-threads=1 --nocapture
 ```
 
-## 从 0.1 升级
+## Upgrading from 0.1
 
-0.1 存在若干问题（FP8 权重无法加载、512 token 上下文截断、硬编码 EOS、无 KV cache、candle 依赖 CUDA fork 等），
-详见 [MERGE.md](MERGE.md)：包含逐条 file:line、实测证据、以及新旧 API 对照表。
+0.1 had several problems (FP8 checkpoints could not be loaded at all, a 512-token
+context window truncated inputs, a hard-coded EOS id, no KV cache, a CUDA-only candle
+fork…). See [MERGE.md](MERGE.md) for the full report with `file:line` references,
+measurements and an old→new API table. ([中文版](MERGE_CN.md))
 
-公开 API 基本保持兼容，主要变化：
+The public API is largely source compatible:
 
 ```diff
 - use hy_mt::TextGeneration;
-+ use hy_mt::TextGeneration;                 // 仍在，行为已修复
-+ use hy_mt::{Translator, TranslationRequest}; // 新的翻译 API
++ use hy_mt::TextGeneration;                    // still there, bugs fixed
++ use hy_mt::{Translator, TranslationRequest};  // new translation API
 ```
 
-* `TextGeneration::generate` 不再向 stdout 打印，返回 `Result<String>`
-* `TextGeneration::tokenizer()` 返回 `&Tokenizer`（需要 HF 句柄用 `tokenizer().inner()`）
-* 移除 `hy_mt::model::*` 与 `hy_mt::masking_utils::*`（由 `hy_mt::models::CausalLm` 取代）
+* `TextGeneration::generate` no longer prints to stdout and returns `Result<String>`
+* `TextGeneration::tokenizer()` returns `&Tokenizer` (`tokenizer().inner()` for the raw
+  HuggingFace handle)
+* `hy_mt::model::*` and `hy_mt::masking_utils::*` were removed in favour of
+  `hy_mt::models::CausalLm`
 
-## 许可
+## License
 
-MIT。模型权重与 tokenizer 遵循混元官方许可（见各 checkpoint 内 `License.txt`）。
-合并来源与归属见 [MERGE.md](MERGE.md#5-许可与归属)。
+MIT. Model weights and tokenizers follow Tencent Hunyuan's own license (see
+`License.txt` inside each checkpoint). Provenance of the merged code is documented in
+[MERGE.md](MERGE.md#5-license-and-provenance).
