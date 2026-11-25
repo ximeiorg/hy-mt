@@ -1,185 +1,216 @@
 # hy-mt
 
-[![Crates.io](https://img.shields.io/crates/v/hy-mt.svg)](https://crates.io/crates/hy-mt) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
+[![Crates.io](https://img.shields.io/crates/v/hy-mt.svg)](https://crates.io/crates/hy-mt) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org)
 
-`hy-mt` 是一个基于 Rust 实现的轻量级机器翻译模型推理库，专门用于加载和运行腾讯混元（Hunyuan）MT系列模型。
+基于 [candle](https://github.com/huggingface/candle) 的**腾讯混元 MT 翻译模型** Rust 推理库：
+一套引擎覆盖整个 dense 家族（HY-MT1.5 / Hy-MT3，1.8B / 7B，bf16 / FP8），无需 Python、PyTorch、transformers。
 
-> ⚠️ **注意**: 当前版本为实验性实现，模型精度尚未完全对齐，翻译效果和python 版本有一些小差异。
+* 直接加载官方 `*-FP8`（compressed-tensors）与 bf16 权重，加载时反量化到 f16/bf16/f32
+* Apple Metal、CUDA、CPU（Accelerate / MKL）后端，feature 可叠加、运行时选设备
+* 两套 chat 模板族自适应：1.8B 的 `<｜hy_…｜>` 与 7B 的 `<|startoftext|>` / `<|extra_N|>`
+* KV cache + 增量 detokenizer，流式输出不截断多字节字符
+* 模型卡给出的 7 类翻译 prompt（术语、风格、个性化、分隔符、结构化数据、背景信息…）中英双语
+* 保留 0.1 的 `TextGeneration` API，老代码只需换 crate 版本
 
-## 功能特点
+## 支持的模型
 
-- 🚀 **高性能**: 使用 Rust 编写，确保内存安全和高性能推理
-- 🔥 **多设备支持**: 基于 Candle 框架，支持 CPU 和 CUDA GPU 推理
-- 🤖 **模型兼容**: 支持腾讯混元 MT 系列模型（HY-MT1.5-1.8B）
-- 📦 **简洁 API**: 提供易于使用的文本生成接口
-- 🧩 **模块化设计**: 清晰的模块结构，易于扩展和维护
+| checkpoint | 架构 | 词表 / 模板族 | 状态 |
+|---|---|---|---|
+| `HY-MT1.5-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
+| `Hy-MT3-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
+| `Hunyuan-MT-7B`、`HY-MT1.5-7B`、`Hy-MT3-7B`(+FP8) | dense | 128k / `Hunyuan7B` | ✅ 代码路径就绪 |
+| `Hy-MT3-30B-A3B`(+FP8) | **MoE** | 128k / `Hunyuan7B` | ⛔ 未实现 |
+
+架构来自 `config.json`（`hunyuan_v1_dense`），所以同架构的版本**不需要改代码**，只需要换模型目录。
+1.8B 与 7B 的差异只是规模 + 词表 + 模板族；FP8 与 bf16 的差异只是权重存储方式。
 
 ## 安装
 
-### 作为依赖添加
-
-在 `Cargo.toml` 中添加：
-
 ```toml
 [dependencies]
-hy-mt = "0.1.0"
+hy-mt = "0.2"
+
+# 按需选一个后端（可叠加，运行时再挑设备）
+# hy-mt = { version = "0.2", features = ["metal"] }
+# hy-mt = { version = "0.2", features = ["cuda"] }
 ```
 
-### 从源码构建
+作为库构建：
 
 ```bash
-# 克隆项目
-git clone https://github.com/ximeiorg/hy-mt
-cd hy-mt
-
-# 构建项目
-cargo build --release
-
-# 运行测试
-cargo test
+cargo build --release --features metal      # Apple GPU（推荐，f16）
+cargo build --release                       # CPU（f32）
+cargo build --release --features "metal,accelerate"
 ```
 
 ## 快速开始
 
-### 基本使用
+### 1. 翻译 API（推荐）
 
 ```rust
-use candle_core::{Device, Result};
-use hy_mt::TextGeneration;
+use hy_mt::{TranslationRequest, Translator};
 
-fn main() -> Result<()> {
-    // 设置设备（优先使用GPU）
-    let device = Device::cuda_if_available(0)?;
-    
-    // 加载预训练模型（需要提前下载模型权重）
-    let model_path = std::path::Path::new("path/to/hunyuan/model");
-    let mut model = TextGeneration::from_pretrained(model_path, &device)?;
+let mut translator = Translator::from_pretrained("/models/Hy-MT3-1.8B-FP8")?;
 
-    // 生成文本
-    let prompt = "Translate the following English text to Chinese: Hello, world!";
-    println!("输入提示: {}", prompt);
-    println!("生成结果: ");
-    
-    let result = model.generate(prompt, 512)?;
-    println!("\n完整结果: {}", result);
+// 默认模板
+println!("{}", translator.translate("今天天气真好。", "en")?.text);
 
-    Ok(())
+// 带术语 / 风格约束
+let req = TranslationRequest::new("The Hunyuan-MT3 model runs on Apple silicon.", "zh")
+    .term("Hunyuan-MT3", "混元 MT3")
+    .term("Apple silicon", "苹果芯片")
+    .style("正式");
+println!("{}", translator.translate_with(&req, None)?.text);
+
+// 流式
+translator.translate_stream(&req, None, |delta| print!("{delta}"))?;
+```
+
+设备与精度：
+
+```rust
+use hy_mt::{DType, Device, Translator};
+
+let t = Translator::builder(dir)
+    .device(Device::Cpu)          // 或 Device::new_metal(0)? / Device::new_cuda(0)?
+    .dtype(DType::F16)
+    .verbose(true)
+    .load()?;
+```
+
+选择顺序：显式 `device(..)` > `HYMT_DEVICE=cpu|metal[:N]|cuda[:N]` > 自动（Metal → CUDA → CPU）。
+默认 dtype 随设备：Metal→f16、CUDA→bf16、CPU→f32。
+
+### 2. 原始生成 API（0.1 兼容）
+
+```rust
+use hy_mt::{Device, TextGeneration};
+
+let mut model = TextGeneration::from_pretrained("/models/HY-MT1.5-1.8B-FP8", &Device::Cpu)?;
+
+// 一次性
+let answer = model.generate("将以下文本翻译为英语：你好，世界。", 256)?;
+println!("{answer}");
+
+// 流式
+for delta in model.generate_stream_iter("将以下文本翻译为英语：你好，世界。", 256) {
+    print!("{delta}");
 }
 ```
 
-### 高级配置
+### 3. 逐 token 控制
 
 ```rust
-use hy_mt::{TextGeneration, model::HunYuanDenseV1ForCausalLM};
+use hy_mt::{GenerateConfig, Message, SamplingConfig};
 
-// 自定义生成参数
-let mut model = TextGeneration::new_with_topk(
-    model,           // 加载的模型
-    tokenizer,       // tokenizer
-    42,              // 随机种子
-    Some(0.7),       // temperature
-    Some(20),        // top-k
-    Some(0.6),       // top-p
-    1.1,             // 重复惩罚系数
-    64,              // 重复惩罚窗口大小
-    &device,
-)?;
-```
-
-### 流式生成
-
-库支持两种流式生成方式：
-
-#### 使用回调函数
-
-```rust
-use hy_mt::TextGeneration;
-
-let mut model = TextGeneration::from_pretrained(path, &device)?;
-
-// 使用回调函数实时接收生成的文本片段
-let result = model.generate_stream("Hello world", 512, |text_chunk| {
-    println!("实时生成: {}", text_chunk);
-    Ok(())
-})?;
-
-println!("完整结果: {}", result);
-```
-
-#### 使用迭代器
-
-```rust
-use hy_mt::TextGeneration;
-
-let mut model = TextGeneration::from_pretrained(path, &device)?;
-
-// 使用迭代器逐个获取生成的文本片段
-for chunk in model.generate_stream_iter("Hello world", 512)? {
-    let chunk = chunk?;
-    println!("生成片段: {}", chunk);
+let cfg = GenerateConfig {
+    sampling: SamplingConfig { temperature: 0.0, ..SamplingConfig::greedy() },
+    max_new_tokens: 512,
+    stop_token_ids: vec![],
+};
+let ids = translator.encode_chat(&[Message::user("将以下文本翻译为英语：…")])?;
+let mut session = translator.start_session(&ids, &cfg)?;
+while let Some(delta) = session.next_delta()? {
+    print!("{delta}");
 }
+let out = session.into_output()?;
+println!("\n{} tokens, {:?}", out.generated_tokens, out.finish_reason);
 ```
 
-## 项目结构
+## 翻译 Prompt
 
+`TranslationRequest` 覆盖模型卡列出的 7 类场景，按优先级选模板：
+
+1. `format_type` → 结构化数据（JSON/YAML/HTML…，保护 key 与 `{{var}}` 占位符）
+2. `background` → 背景信息
+3. `preferences` → 个性化任务列表
+4. `terminology` → 术语表
+5. `style` → 风格约束
+6. `preserve_delimiters` → 分隔符保持
+7. 默认模板
+
+指令语言自动选择（目标语言是中文 → 中文指令，否则英文），也可 `prompt_lang(PromptLang::Zh)` 指定。
+语言参数支持代码（`"en"`、`"zh-Hans"`）或全称（`"English"`、`"中文"`），内部按模型卡要求换成全称。
+
+## 后端 features
+
+每个后端 feature 都必须同时转发给 `candle-core` 与 `candle-nn`：
+
+```toml
+metal = ["candle-core/metal", "candle-nn/metal"]
 ```
-src/
-├── lib.rs          # 主库文件，导出公共API
-├── config.rs       # 模型配置结构
-├── model.rs        # 模型架构实现
-├── tokenizer.rs    # Tokenizer封装
-├── prompt.rs       # 提示模板处理
-├── logits_processor.rs # 生成策略实现
-├── masking_utils.rs    # 注意力掩码工具
-└── utils.rs        # 工具函数
+
+前者管存储/矩阵乘，后者提供本库调用的融合算子（`rms_norm`、`rotary_emb::rope`、`softmax`）的
+GPU kernel，且是 `#[cfg(feature = "metal")]` / `#[cfg(feature = "cuda")]` 门控的。只开一边能编译
+通过，但运行时会报 `no metal implementation for op ...`。
+
+| feature | 后端 | 说明 |
+|---|---|---|
+| `cpu`（默认） | CPU | candle 始终编译 CPU 后端，flag 只是让选择显式化 |
+| `metal` | Apple GPU | 仅 macOS，建议 f16 |
+| `metal-debug-labels` | Apple GPU | command encoder 加 label，调试用 |
+| `accelerate` | CPU | Apple Accelerate BLAS（macOS/iOS） |
+| `cuda` / `cudnn` | NVIDIA GPU | `cudnn` 隐含 `cuda` |
+| `mkl` | CPU | Intel MKL（构建时下载） |
+
+## 性能
+
+Apple M1（8 核 GPU / 16 GB），f16 + Metal，`cargo build --release`：
+
+| 模型 | 短上下文（14 token） | 长上下文（518 token） | 加载 |
+|---|---|---|---|
+| `HY-MT1.5-1.8B-FP8` | 14.3 tok/s（70 ms/token） | 14.0 tok/s（71 ms/token） | ~6 s |
+| `Hy-MT3-1.8B-FP8` | 15.0 tok/s（67 ms/token） | 12.0 tok/s（84 ms/token） | ~6 s |
+
+* 内存：f16 权重 ≈ 4.1 GB；KV cache 64 KB/token
+* 预填充：518 token ≈ 0.12 s（Metal 内核已缓存时；首次运行会有一次 shader 编译，`Translator` 默认在加载阶段预热）
+* CPU（f16）：≈ 4.4 tok/s；CPU f32 更快但 1.8B 需 7.2 GB
+
+```bash
+cargo run --release --features metal --example bench -- <model-dir> 40        # 短上下文
+cargo run --release --features metal --example bench -- <model-dir> 20 500    # 长上下文
 ```
 
 ## 示例
 
-项目包含完整的文本生成示例：
-
 ```bash
-# 运行文本生成示例
-cargo run --example text_generation_example
-
-# 查看CUDA支持示例
-cargo run --example cuda
-
-# 运行简单示例
-cargo run --example sample
+cargo run --release --features metal --example text_generation_example -- <model-dir>
+cargo run --release --features metal --example stream_generation_example -- <model-dir>
+cargo run --release --features metal --example translate -- --model <model-dir> --target en --text "今天天气真好。"
+cargo run --release --features metal --example quality -- <model-dir>   # 7 类 prompt 场景
+cargo run --release --features metal --example bench -- <model-dir> 40
+cargo run --example inspect_tokens -- <model-dir>                       # 分词 / 模板检查
 ```
 
-## 模型准备
+## 测试
 
-要使用此库，你需要：
+```bash
+cargo test                       # 单元测试（不需要模型）
+cargo test --features metal
 
-1. 下载腾讯混元 MT 系列模型权重文件
-2. 将模型文件放置在项目目录下的 `tencent/HY-MT1.5-1.8B/` 路径中
-3. 确保包含以下文件：
-   - `config.json` - 模型配置文件
-   - `tokenizer.json` - Tokenizer文件
-   - `model.safetensors` - 模型权重文件
+# 端到端（会加载真实权重；建议串行，避免同时驻留多份模型）
+HYMT_MODEL_DIRS=/path/HY-MT1.5-1.8B-FP8:/path/Hy-MT3-1.8B-FP8 \
+  cargo test --release --features metal --test model -- --test-threads=1 --nocapture
+```
 
-## 依赖
+## 从 0.1 升级
 
-- **Rust**: edition 2024
-- **Candle**: 深度学习框架 (`candle-core`, `candle-nn`)
-- **CUDA**: 可选，用于 GPU 加速
-- **tokenizers**: Tokenizer处理库
+0.1 存在若干问题（FP8 权重无法加载、512 token 上下文截断、硬编码 EOS、无 KV cache、candle 依赖 CUDA fork 等），
+详见 [MERGE.md](MERGE.md)：包含逐条 file:line、实测证据、以及新旧 API 对照表。
 
-## 开发状态
+公开 API 基本保持兼容，主要变化：
 
-- ✅ 基础模型加载和推理
-- ✅ CPU/GPU 多设备支持
-- ✅ 文本生成功能
-- 🔄 模型精度对齐（进行中）
-- 🔄 性能优化（进行中）
-- 🔄 更多模型支持（计划中）
+```diff
+- use hy_mt::TextGeneration;
++ use hy_mt::TextGeneration;                 // 仍在，行为已修复
++ use hy_mt::{Translator, TranslationRequest}; // 新的翻译 API
+```
 
-## 贡献
+* `TextGeneration::generate` 不再向 stdout 打印，返回 `Result<String>`
+* `TextGeneration::tokenizer()` 返回 `&Tokenizer`（需要 HF 句柄用 `tokenizer().inner()`）
+* 移除 `hy_mt::model::*` 与 `hy_mt::masking_utils::*`（由 `hy_mt::models::CausalLm` 取代）
 
-欢迎提交 Issue 和 Pull Request！
+## 许可
 
-## 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+MIT。模型权重与 tokenizer 遵循混元官方许可（见各 checkpoint 内 `License.txt`）。
+合并来源与归属见 [MERGE.md](MERGE.md#5-许可与归属)。
