@@ -11,6 +11,18 @@ readme = "README.md"
 keywords = ["machine-translation", "hunyuan", "candle", "rust", "nlp"]
 categories = ["science", "text-processing"]
 
+# Only ship what belongs in the crate (the repo also carries some local Python
+# scratch files and editor metadata).
+include = [
+    "src/**/*.rs",
+    "examples/**/*.rs",
+    "tests/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "MERGE.md",
+    "LICENSE",
+]
+
 [lib]
 name = "hy_mt"
 path = "src/lib.rs"
