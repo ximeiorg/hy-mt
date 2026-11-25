@@ -17,12 +17,23 @@
 | checkpoint | 架构 | 词表 / 模板族 | 状态 |
 |---|---|---|---|
 | `HY-MT1.5-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
+| `Hy-MT2-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
 | `Hy-MT3-1.8B` / `-FP8` | dense | 120 818 / `Hy18B` | ✅ 实测通过 |
 | `Hunyuan-MT-7B`、`HY-MT1.5-7B`、`Hy-MT3-7B`(+FP8) | dense | 128k / `Hunyuan7B` | ✅ 代码路径就绪 |
 | `Hy-MT3-30B-A3B`(+FP8) | **MoE** | 128k / `Hunyuan7B` | ⛔ 未实现 |
 
 架构来自 `config.json`（`hunyuan_v1_dense`），所以同架构的版本**不需要改代码**，只需要换模型目录。
-1.8B 与 7B 的差异只是规模 + 词表 + 模板族；FP8 与 bf16 的差异只是权重存储方式。
+1.8B 与 7B 的差异只是规模 + 词表 + 模板族；FP8 与 bf16 的差异只是权重存储方式；
+`Hy-MT2-1.8B` 与 `HY-MT1.5-1.8B`/`Hy-MT3-1.8B` 的 `config.json` 只差一个 `torch_dtype` 字段名
+（已用 serde 别名兼容），`chat_template.jinja` 逐字节相同。
+
+同一引擎跑三代 1.8B（贪心解码，同一批句子，实测）：
+
+| 源文 | HY-MT1.5 | Hy-MT2 | Hy-MT3 |
+|---|---|---|---|
+| 今天天气真好，我们一起去公园散步吧。(→en) | It's a beautiful day today. Let's go for a walk in the park together. | The weather is really nice today. Let's go for a walk in the park together. | The weather is really nice today; let's go for a walk in the park together. |
+| The committee approved the budget after a lengthy debate. (→zh) | 在长时间的讨论之后，委员会最终批准了这份预算方案。 | 经过长时间的讨论，委员会通过了预算。 | 委员会经过长时间辩论后批准了预算。 |
+| 混元大模型支持 102 种语言的互译。(→en) | The Hunyuan Large Model supports translation between 102 languages. | Hunyuan large model supports translation between 102 languages. | The Hunyuan large model supports mutual translation in 102 languages. |
 
 ## 安装
 
@@ -189,7 +200,7 @@ cargo test                       # 单元测试（不需要模型）
 cargo test --features metal
 
 # 端到端（会加载真实权重；建议串行，避免同时驻留多份模型）
-HYMT_MODEL_DIRS=/path/HY-MT1.5-1.8B-FP8:/path/Hy-MT3-1.8B-FP8 \
+HYMT_MODEL_DIRS=/path/HY-MT1.5-1.8B-FP8:/path/Hy-MT2-1.8B-FP8:/path/Hy-MT3-1.8B-FP8 \
   cargo test --release --features metal --test model -- --test-threads=1 --nocapture
 ```
 

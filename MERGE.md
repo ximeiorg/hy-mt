@@ -39,9 +39,20 @@ hy_mt
 | checkpoint | 架构 | 词表 / 模板族 | 状态 |
 |---|---|---|---|
 | `HY-MT1.5-1.8B(-FP8)` | dense | 120818 / `Hy18B` | ✅ 实测通过 |
+| `Hy-MT2-1.8B(-FP8)` | dense | 120818 / `Hy18B` | ✅ 实测通过（config 只差 `torch_dtype` 字段名） |
 | `Hy-MT3-1.8B(-FP8)` | dense | 120818 / `Hy18B` | ✅ 实测通过 |
 | `Hunyuan-MT-7B`、`HY-MT1.5-7B`、`Hy-MT3-7B`(+FP8) | dense | 128k / `Hunyuan7B` | ✅ 代码路径就绪（`torch_dtype`、数组 eos、ckpt 特有点位都已适配） |
 | `Hy-MT3-30B-A3B(-FP8)` | **MoE** | 128k / `Hunyuan7B` | ⛔ 未实现（唯一真正"结构大变"的版本） |
+
+三代 1.8B 的 `chat_template.jinja` **逐字节相同**，`config.json` 的差异只有
+`dtype` → `torch_dtype` 这一处字段改名（0.2 用 `#[serde(alias = "torch_dtype")]` 兼容）。
+同一引擎、同一份 prompt，三代给出的译文各不相同（`cmp` 也确认权重不同）：
+
+| 源文 | HY-MT1.5 | Hy-MT2 | Hy-MT3 |
+|---|---|---|---|
+| 今天天气真好，我们一起去公园散步吧。(→en) | It's a beautiful day today. Let's go for a walk in the park together. | The weather is really nice today. Let's go for a walk in the park together. | The weather is really nice today; let's go for a walk in the park together. |
+| The committee approved the budget after a lengthy debate. (→zh) | 在长时间的讨论之后，委员会最终批准了这份预算方案。 | 经过长时间的讨论，委员会通过了预算。 | 委员会经过长时间辩论后批准了预算。 |
+| 混元大模型支持 102 种语言的互译。(→en) | The Hunyuan Large Model supports translation between 102 languages. | Hunyuan large model supports translation between 102 languages. | The Hunyuan large model supports mutual translation in 102 languages. |
 
 > 7B 族与 1.8B 族的模板**完全不同**（不是措辞差异）：7B 用 `<|startoftext|>` 开头、
 > `<|extra_0|>` 结束用户轮、`<|extra_4|>` 结束 system、`<|eos|>` 结束 assistant 轮，
@@ -177,9 +188,9 @@ chat, chat_stream, start_session, encode_chat}`、`Session`、`TranslationReques
 端到端测试（两个 checkpoint 都跑）：
 
 ```bash
-HYMT_MODEL_DIRS=…/Hy-MT1.5-1.8B-FP8:…/Hy-MT3-1.8B-FP8 \
+HYMT_MODEL_DIRS=…/Hy-MT1.5-1.8B-FP8:…/Hy-MT2-1.8B-FP8:…/Hy-MT3-1.8B-FP8 \
   cargo test --release --features metal --test model -- --test-threads=1 --nocapture
-# 9 passed
+# 9 passed（三代 checkpoint 全部通过）
 ```
 
 ---

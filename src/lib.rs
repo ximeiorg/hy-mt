@@ -9,6 +9,7 @@
 //! | checkpoint | arch | vocab / chat template | weights |
 //! |---|---|---|---|
 //! | `HY-MT1.5-1.8B`, `HY-MT1.5-1.8B-FP8` | dense | 120 818 / `Hy18B` | bf16, FP8 |
+//! | `Hy-MT2-1.8B`, `Hy-MT2-1.8B-FP8` | dense | 120 818 / `Hy18B` | bf16, FP8 |
 //! | `Hy-MT3-1.8B`, `Hy-MT3-1.8B-FP8` | dense | 120 818 / `Hy18B` | bf16, FP8 |
 //! | `Hunyuan-MT-7B`, `HY-MT1.5-7B`, `Hy-MT3-7B` (+FP8) | dense | 128k / `Hunyuan7B` | bf16, FP8 |
 //! | `Hy-MT3-30B-A3B` (+FP8) | MoE | 128k / `Hunyuan7B` | not implemented yet |
