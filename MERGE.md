@@ -181,6 +181,7 @@ chat, chat_stream, start_session, encode_chat}`、`Session`、`TranslationReques
 | 模型 | 短上下文（14 tok） | 长上下文（518 tok） | 加载 |
 |---|---|---|---|
 | `HY-MT1.5-1.8B-FP8` | 14.3 tok/s（70 ms/token） | 14.0 tok/s（71 ms/token） | ~6 s |
+| `Hy-MT2-1.8B-FP8` | 13.0 tok/s（77 ms/token） | 12.5 tok/s（80 ms/token） | ~6 s |
 | `Hy-MT3-1.8B-FP8` | 15.0 tok/s（67 ms/token） | 12.0 tok/s（84 ms/token） | ~6 s |
 
 内存：f16 权重 ≈ 4.1 GB；KV cache 64 KB/token；预填充 518 token ≈ 0.12 s（Metal 内核已缓存时）。
